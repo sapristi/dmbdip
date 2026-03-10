@@ -2,46 +2,44 @@
 
 A Rust program that renders markdown files as images and displays them in the terminal (Kitty graphics protocol).
 
-## Development Plan
+## Workflow Rules
 
-### Phase 1: Image display with scroll simulation (current)
-
-**Goal:** Display a generated test image in Kitty terminal with keyboard-driven scrolling.
-
-**Requirements:**
-- Generate a test image of parametrizable size (width x height, larger than terminal viewport)
-- Display a viewport-sized portion of the image using the Kitty graphics protocol
-- On keypress (Up/Down, j/k, PgUp/PgDn), shift the viewport and redisplay
-- ESC or q to quit
-
-**Implementation steps:**
-1. Initialize a Rust project with dependencies: `image` (image generation), `base64` (encoding for Kitty protocol), `crossterm` (raw mode + key events)
-2. Generate a test image: colored bands or gradient with text labels showing Y coordinates, so scrolling is visually obvious
-3. Implement Kitty graphics protocol output: encode image chunk as PNG, send via `\x1b_Gf=100,a=T,...;base64data\x1b\\`
-4. Implement a viewport: track scroll offset, extract the visible sub-image, display it
-5. Event loop: read key events with crossterm, update offset, redraw
-
-**Key decisions:**
-- Use Kitty's inline image protocol (APC escape sequences)
-- Transmit as PNG (f=100) for compression
-- Clear and re-transmit on each scroll (simple first, optimize later)
-- Terminal size detection via crossterm to auto-size viewport
-
-### Phase 2: Markdown to image rendering (future)
-
-- Parse markdown (pulldown-cmark or similar)
-- Render markdown to an image (text layout, code blocks, headings, etc.)
-- Display the rendered image with scrolling from Phase 1
-
-### Phase 3: Polish (future)
-
-- Smooth scrolling / partial updates
-- Resize handling
-- File watching / live reload
-- CLI argument parsing (file path, theme, font size)
+- Commit changes each time a task is done
+- Clean git history if appropriate (squash fixup commits)
+- Evaluate quality every few commits and after fixing bugs
 
 ## Tech Stack
 
 - **Language:** Rust
-- **Terminal:** Kitty (graphics protocol)
-- **Key crates:** `image`, `base64`, `crossterm`
+- **Terminal:** Kitty (graphics protocol, raw RGB f=24, double-buffered)
+- **Key crates:** `image`, `base64`, `crossterm`, `pulldown-cmark`, `ab_glyph`, `imageproc`
+- **Fonts:** DejaVu Sans (regular, bold, oblique) + DejaVu Sans Mono
+
+## Architecture
+
+- Parse markdown into `Vec<Block>` (Heading, Paragraph, CodeBlock, Table, Metadata)
+- Inline text uses `Vec<Span>` with styles: Normal, Bold, Italic, Code
+- `HeadingInfo` tracks each heading's position, number, fold state
+- `AppState` manages blocks, headings, cursor, scroll, fold state
+- Two-pass rendering: compute height, then draw to RgbImage (re-renders on fold/nav changes)
+- Kitty display: double-buffered with alternating image IDs, raw RGB, BufWriter
+- Alternate screen mode for proper key passthrough
+
+## Keybindings
+
+- Up/Down: navigate between headings
+- Left/Right: toggle fold open/close
+- Space: scroll down half page
+- Shift+Space: scroll up half page
+- j/k: small scroll steps
+- PgUp/PgDn: half-page scroll
+- Home/End: top/bottom
+- q/Esc/Ctrl-C: quit
+
+## Completed Tasks
+
+- [x] Task 0: Fix inline code spacing and code block indentation
+- [x] Task 1: Hierarchical heading numbering (1., 1.1., 1.1.1.)
+- [x] Task 2: Heading navigation with cursor (orange bar in left margin)
+- [x] Task 3: Section folding with ▶/▼ indicators
+- [x] Task 4: New keybindings (arrows for nav, space for scroll)
