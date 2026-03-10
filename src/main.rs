@@ -627,7 +627,7 @@ fn render_markdown(
                 y += PARAGRAPH_GAP * 2;
             }
             Block::Heading { level, spans } => {
-                if matches!(level, HeadingLevel::H1) && y > PARAGRAPH_GAP {
+                if matches!(level, HeadingLevel::H1) {
                     y += H1_EXTRA_MARGIN;
                 }
 
