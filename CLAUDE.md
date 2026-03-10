@@ -1,4 +1,4 @@
-# mdbdp - Display Markdown But Do it Pretty
+# dmbdip - Display Markdown But Do it Pretty
 
 ![Preview](assets/preview.png)
 
