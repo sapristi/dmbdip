@@ -1,5 +1,7 @@
 # mdbdp - Display Markdown But Do it Pretty
 
+![Preview](assets/preview.png)
+
 A Rust program that renders markdown files as images and displays them in the terminal using the Kitty graphics protocol.
 
 > This file serves as both the project README and the CLAUDE.md (AI assistant instructions).
