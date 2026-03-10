@@ -19,6 +19,7 @@ const PARAGRAPH_GAP: u32 = 16;
 const CURSOR_WIDTH: u32 = 4;
 const CURSOR_MARGIN: u32 = 6; // gap between cursor and text
 const MAX_CONTENT_WIDTH: u32 = 900;
+const H1_EXTRA_MARGIN: u32 = 40;
 
 // --- Theme ---
 
@@ -626,6 +627,10 @@ fn render_markdown(
                 y += PARAGRAPH_GAP * 2;
             }
             Block::Heading { level, spans } => {
+                if matches!(level, HeadingLevel::H1) && y > PARAGRAPH_GAP {
+                    y += H1_EXTRA_MARGIN;
+                }
+
                 let (size, color) = heading_style(level, &theme);
                 let scale = PxScale::from(size);
 
@@ -744,6 +749,9 @@ fn compute_total_height(
                 h += entries.len() as u32 * line_height + PARAGRAPH_GAP * 2;
             }
             Block::Heading { level, spans } => {
+                if matches!(level, HeadingLevel::H1) && h > PARAGRAPH_GAP {
+                    h += H1_EXTRA_MARGIN;
+                }
                 let (size, _) = heading_style(level, theme);
                 let scale = PxScale::from(size);
                 let hi = heading_idx;
