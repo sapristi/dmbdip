@@ -1311,15 +1311,10 @@ impl AppState {
 
         self.current_heading = Some(new_idx);
 
-        // Scroll to make heading visible
+        // Scroll to place heading at ~1/4 from the top
         let heading = &self.headings[new_idx];
-        if heading.y_pos < self.scroll_y {
-            self.scroll_y = heading.y_pos.saturating_sub(PARAGRAPH_GAP);
-        } else if heading.y_pos + heading.heading_height > self.scroll_y + self.vp_height {
-            self.scroll_y = (heading.y_pos + heading.heading_height)
-                .saturating_sub(self.vp_height)
-                .min(self.max_scroll());
-        }
+        let target = heading.y_pos.saturating_sub(self.vp_height / 4);
+        self.scroll_y = target.min(self.max_scroll());
 
         true
     }
