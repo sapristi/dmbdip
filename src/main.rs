@@ -18,6 +18,7 @@ const MARGIN_RIGHT: u32 = 20;
 const PARAGRAPH_GAP: u32 = 16;
 const CURSOR_WIDTH: u32 = 4;
 const CURSOR_MARGIN: u32 = 6; // gap between cursor and text
+const MAX_CONTENT_WIDTH: u32 = 900;
 
 // --- Theme ---
 
@@ -587,7 +588,8 @@ fn render_markdown(
     fonts: &Fonts,
 ) -> (RgbImage, Vec<(usize, u32)>) {
     let theme = default_theme();
-    let content_width = width - MARGIN_LEFT - MARGIN_RIGHT;
+    let content_width = (width - MARGIN_LEFT - MARGIN_RIGHT).min(MAX_CONTENT_WIDTH);
+    let margin_left = (width - content_width) / 2;
 
     let total_height = compute_total_height(blocks, headings, fonts, &theme, content_width);
 
@@ -609,7 +611,7 @@ fn render_markdown(
 
         match block {
             Block::Metadata { entries } => {
-                y = render_metadata(&mut img, entries, fonts, &theme, y);
+                y = render_metadata(&mut img, entries, fonts, &theme, y, margin_left);
                 y += PARAGRAPH_GAP * 2;
             }
             Block::Heading { level, spans } => {
@@ -647,7 +649,7 @@ fn render_markdown(
                 if current_heading == Some(hi) {
                     draw_filled_rect_mut(
                         &mut img,
-                        Rect::at(CURSOR_MARGIN as i32, y as i32)
+                        Rect::at((margin_left - CURSOR_MARGIN - CURSOR_WIDTH) as i32, y as i32)
                             .of_size(CURSOR_WIDTH, heading_total_h),
                         theme.cursor_color,
                     );
@@ -658,7 +660,7 @@ fn render_markdown(
                         draw_text_mut(
                             &mut img,
                             color,
-                            MARGIN_LEFT as i32,
+                            margin_left as i32,
                             y as i32,
                             scale,
                             &fonts.bold,
@@ -675,17 +677,17 @@ fn render_markdown(
                 let line_height = (theme.body_size * 1.4) as u32;
 
                 for line in &lines {
-                    draw_spans(&mut img, line, MARGIN_LEFT, y, scale, fonts, &theme);
+                    draw_spans(&mut img, line, margin_left, y, scale, fonts, &theme);
                     y += line_height;
                 }
                 y += PARAGRAPH_GAP;
             }
             Block::CodeBlock { text } => {
-                y = render_code_block(&mut img, text, fonts, &theme, y, content_width, width);
+                y = render_code_block(&mut img, text, fonts, &theme, y, content_width, margin_left);
                 y += PARAGRAPH_GAP;
             }
             Block::Table { headers, rows } => {
-                y = render_table(&mut img, headers, rows, fonts, &theme, y, content_width);
+                y = render_table(&mut img, headers, rows, fonts, &theme, y, content_width, margin_left);
                 y += PARAGRAPH_GAP * 2;
             }
         }
@@ -790,6 +792,7 @@ fn render_metadata(
     fonts: &Fonts,
     theme: &Theme,
     start_y: u32,
+    margin_left: u32,
 ) -> u32 {
     let scale = PxScale::from(theme.body_size);
     let line_height = (theme.body_size * 1.5) as u32;
@@ -801,7 +804,7 @@ fn render_metadata(
         draw_text_mut(
             img,
             theme.meta_key_color,
-            MARGIN_LEFT as i32,
+            margin_left as i32,
             y as i32,
             scale,
             &fonts.bold,
@@ -810,7 +813,7 @@ fn render_metadata(
         draw_text_mut(
             img,
             theme.meta_val_color,
-            (MARGIN_LEFT + key_w) as i32,
+            (margin_left + key_w) as i32,
             y as i32,
             scale,
             &fonts.regular,
@@ -829,7 +832,7 @@ fn render_code_block(
     theme: &Theme,
     start_y: u32,
     content_width: u32,
-    full_width: u32,
+    margin_left: u32,
 ) -> u32 {
     let scale = PxScale::from(theme.body_size);
     let line_height = (theme.body_size * 1.4) as u32;
@@ -859,8 +862,8 @@ fn render_code_block(
 
     draw_filled_rect_mut(
         img,
-        Rect::at(MARGIN_LEFT as i32, start_y as i32).of_size(
-            full_width - MARGIN_LEFT - MARGIN_RIGHT,
+        Rect::at(margin_left as i32, start_y as i32).of_size(
+            content_width,
             block_height,
         ),
         theme.code_bg,
@@ -869,7 +872,7 @@ fn render_code_block(
     let mut y = start_y + pad;
     for lines in &wrapped_lines {
         for line in lines {
-            draw_spans(img, line, MARGIN_LEFT + pad, y, scale, fonts, theme);
+            draw_spans(img, line, margin_left + pad, y, scale, fonts, theme);
             y += line_height;
         }
     }
@@ -920,6 +923,7 @@ fn render_table(
     theme: &Theme,
     start_y: u32,
     content_width: u32,
+    margin_left: u32,
 ) -> u32 {
     let ncols = headers.len().max(1);
     let col_width = content_width / ncols as u32;
@@ -943,12 +947,12 @@ fn render_table(
 
     draw_filled_rect_mut(
         img,
-        Rect::at(MARGIN_LEFT as i32, y as i32).of_size(table_width, header_h),
+        Rect::at(margin_left as i32, y as i32).of_size(table_width, header_h),
         theme.table_header_bg,
     );
 
     for (ci, wrapped) in header_wrapped.iter().enumerate() {
-        let x = MARGIN_LEFT + ci as u32 * col_width + cell_padding;
+        let x = margin_left + ci as u32 * col_width + cell_padding;
         let mut ty = y + cell_pad_y;
         for line in wrapped {
             for span in line {
@@ -969,8 +973,8 @@ fn render_table(
     let line_y = (y + header_h) as f32;
     draw_line_segment_mut(
         img,
-        (MARGIN_LEFT as f32, line_y),
-        ((MARGIN_LEFT + table_width) as f32, line_y),
+        (margin_left as f32, line_y),
+        ((margin_left + table_width) as f32, line_y),
         theme.table_border,
     );
 
@@ -987,7 +991,7 @@ fn render_table(
         }
 
         for (ci, wrapped) in row_wrapped.iter().enumerate() {
-            let x = MARGIN_LEFT + ci as u32 * col_width + cell_padding;
+            let x = margin_left + ci as u32 * col_width + cell_padding;
             let mut ty = y + cell_pad_y;
             for line in wrapped {
                 draw_spans(img, line, x, ty, scale, fonts, theme);
@@ -999,14 +1003,14 @@ fn render_table(
 
         draw_line_segment_mut(
             img,
-            (MARGIN_LEFT as f32, y as f32),
-            ((MARGIN_LEFT + table_width) as f32, y as f32),
+            (margin_left as f32, y as f32),
+            ((margin_left + table_width) as f32, y as f32),
             theme.table_border,
         );
     }
 
     for ci in 0..=ncols {
-        let x = (MARGIN_LEFT + ci as u32 * col_width) as f32;
+        let x = (margin_left + ci as u32 * col_width) as f32;
         draw_line_segment_mut(
             img,
             (x, start_y as f32),
