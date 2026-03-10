@@ -20,6 +20,7 @@ const CURSOR_WIDTH: u32 = 4;
 const CURSOR_MARGIN: u32 = 6; // gap between cursor and text
 const MAX_CONTENT_WIDTH: u32 = 900;
 const H1_EXTRA_MARGIN: u32 = 40;
+const BLOCK_INDENT: u32 = 24;
 
 // --- Theme ---
 
@@ -623,7 +624,7 @@ fn render_markdown(
 
         match block {
             Block::Metadata { entries } => {
-                y = render_metadata(&mut img, entries, fonts, &theme, y, margin_left);
+                y = render_metadata(&mut img, entries, fonts, &theme, y, margin_left + BLOCK_INDENT);
                 y += PARAGRAPH_GAP * 2;
             }
             Block::Heading { level, spans } => {
@@ -694,21 +695,22 @@ fn render_markdown(
             }
             Block::Paragraph { spans } => {
                 let scale = PxScale::from(theme.body_size);
-                let lines = wrap_spans(spans, fonts, scale, content_width);
+                let indented_width = content_width - BLOCK_INDENT;
+                let lines = wrap_spans(spans, fonts, scale, indented_width);
                 let line_height = (theme.body_size * 1.4) as u32;
 
                 for line in &lines {
-                    draw_spans(&mut img, line, margin_left, y, scale, fonts, &theme);
+                    draw_spans(&mut img, line, margin_left + BLOCK_INDENT, y, scale, fonts, &theme);
                     y += line_height;
                 }
                 y += PARAGRAPH_GAP;
             }
             Block::CodeBlock { text } => {
-                y = render_code_block(&mut img, text, fonts, &theme, y, content_width, margin_left);
+                y = render_code_block(&mut img, text, fonts, &theme, y, content_width - BLOCK_INDENT, margin_left + BLOCK_INDENT);
                 y += PARAGRAPH_GAP;
             }
             Block::Table { headers, rows } => {
-                y = render_table(&mut img, headers, rows, fonts, &theme, y, content_width, margin_left);
+                y = render_table(&mut img, headers, rows, fonts, &theme, y, content_width - BLOCK_INDENT, margin_left + BLOCK_INDENT);
                 y += PARAGRAPH_GAP * 2;
             }
         }
@@ -773,7 +775,8 @@ fn compute_total_height(
             }
             Block::Paragraph { spans } => {
                 let scale = PxScale::from(theme.body_size);
-                let lines = wrap_spans(spans, fonts, scale, content_width);
+                let indented_width = content_width - BLOCK_INDENT;
+                let lines = wrap_spans(spans, fonts, scale, indented_width);
                 let line_height = (theme.body_size * 1.4) as u32;
                 h += lines.len() as u32 * line_height + PARAGRAPH_GAP;
             }
@@ -781,6 +784,7 @@ fn compute_total_height(
                 let scale = PxScale::from(theme.body_size);
                 let mono_lines: Vec<&str> = text.lines().collect();
                 let line_height = (theme.body_size * 1.4) as u32;
+                let indented_width = content_width - BLOCK_INDENT;
                 let mut total_lines = 0u32;
                 for line in &mono_lines {
                     let wrapped = wrap_spans(
@@ -790,7 +794,7 @@ fn compute_total_height(
                         }],
                         fonts,
                         scale,
-                        content_width - 20,
+                        indented_width - 20,
                     );
                     total_lines += wrapped.len() as u32;
                 }
@@ -800,7 +804,7 @@ fn compute_total_height(
                 h += total_lines * line_height + 20 + PARAGRAPH_GAP;
             }
             Block::Table { headers, rows } => {
-                h += compute_table_height(headers, rows, fonts, theme, content_width);
+                h += compute_table_height(headers, rows, fonts, theme, content_width - BLOCK_INDENT);
                 h += PARAGRAPH_GAP * 2;
             }
         }
