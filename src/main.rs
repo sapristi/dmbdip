@@ -1286,16 +1286,16 @@ fn main() -> io::Result<()> {
                 (KeyCode::Up, KeyModifiers::NONE) => state.navigate_heading(-1, &fonts),
 
                 // Left/Right: toggle fold
-                (KeyCode::Left, KeyModifiers::NONE) | (KeyCode::Right, KeyModifiers::NONE) => {
+                (KeyCode::Left, KeyModifiers::NONE) | (KeyCode::Right, KeyModifiers::NONE) | (KeyCode::Tab, _) => {
                     state.toggle_fold(&fonts)
                 }
 
-                // Space / Shift+Space: scroll
+                // Space: scroll down, Shift+Space (any modifier): scroll up
                 (KeyCode::Char(' '), KeyModifiers::NONE) => {
-                    state.scroll(vp_height as i32 / 2)
+                    state.scroll(SCROLL_STEP as i32)
                 }
-                (KeyCode::Char(' '), KeyModifiers::SHIFT) => {
-                    state.scroll(-(vp_height as i32 / 2))
+                (KeyCode::Char(' '), _) => {
+                    state.scroll(-(SCROLL_STEP as i32))
                 }
 
                 // j/k: small scroll steps
