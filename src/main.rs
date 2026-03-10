@@ -1861,3 +1861,486 @@ fn main() -> io::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_fonts() -> Fonts {
+        load_fonts()
+    }
+
+    const SAMPLE_MD: &str = "\
+# Hello World
+
+Some body text with **bold** and *italic* words.
+
+## Section One
+
+Paragraph under section one.
+
+### Subsection 1.1
+
+Details here.
+
+## Section Two
+
+Another paragraph.
+
+```rust
+fn main() {
+    println!(\"hello\");
+}
+```
+
+| Key | Value |
+|-----|-------|
+| a   | 1     |
+| b   | 2     |
+";
+
+    const SAMPLE_WITH_META: &str = "\
+---
+title: Test Doc
+author: Tester
+---
+
+# Title
+
+Body text.
+";
+
+    // --- Parsing ---
+
+    #[test]
+    fn parse_basic_structure() {
+        let blocks = parse_markdown(SAMPLE_MD);
+        // Should have: H1, Paragraph, H2, Paragraph, H3, Paragraph, H2, Paragraph, CodeBlock, Table
+        assert!(blocks.len() >= 8, "expected at least 8 blocks, got {}", blocks.len());
+        assert!(matches!(blocks[0], Block::Heading { level: HeadingLevel::H1, .. }));
+    }
+
+    #[test]
+    fn parse_inline_styles() {
+        let blocks = parse_markdown("Hello **bold** and *italic* and `code`.");
+        assert_eq!(blocks.len(), 1);
+        if let Block::Paragraph { spans } = &blocks[0] {
+            let styles: Vec<_> = spans.iter().map(|s| &s.style).collect();
+            assert!(styles.contains(&&SpanStyle::Bold));
+            assert!(styles.contains(&&SpanStyle::Italic));
+            assert!(styles.contains(&&SpanStyle::Code));
+        } else {
+            panic!("expected Paragraph");
+        }
+    }
+
+    #[test]
+    fn parse_metadata_block() {
+        let blocks = parse_markdown(SAMPLE_WITH_META);
+        assert!(matches!(&blocks[0], Block::Metadata { entries } if entries.len() == 2));
+        if let Block::Metadata { entries } = &blocks[0] {
+            assert_eq!(entries[0], ("title".to_string(), "Test Doc".to_string()));
+            assert_eq!(entries[1], ("author".to_string(), "Tester".to_string()));
+        }
+    }
+
+    #[test]
+    fn parse_code_block() {
+        let blocks = parse_markdown("```\nline1\nline2\n```\n");
+        assert_eq!(blocks.len(), 1);
+        if let Block::CodeBlock { text } = &blocks[0] {
+            assert!(text.contains("line1"));
+            assert!(text.contains("line2"));
+        } else {
+            panic!("expected CodeBlock");
+        }
+    }
+
+    #[test]
+    fn parse_table() {
+        let blocks = parse_markdown("| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n");
+        assert_eq!(blocks.len(), 1);
+        if let Block::Table { headers, rows } = &blocks[0] {
+            assert_eq!(headers.len(), 2);
+            assert_eq!(rows.len(), 2);
+        } else {
+            panic!("expected Table");
+        }
+    }
+
+    // --- Headings ---
+
+    #[test]
+    fn heading_numbering() {
+        let blocks = parse_markdown(SAMPLE_MD);
+        let headings = build_headings(&blocks);
+        assert_eq!(headings.len(), 4); // H1, H2, H3, H2
+        assert_eq!(headings[0].number, "1.");
+        assert_eq!(headings[1].number, "1.1.");
+        assert_eq!(headings[2].number, "1.1.1.");
+        assert_eq!(headings[3].number, "1.2.");
+    }
+
+    #[test]
+    fn heading_level_indices() {
+        assert_eq!(heading_level_index(&HeadingLevel::H1), 0);
+        assert_eq!(heading_level_index(&HeadingLevel::H3), 2);
+        assert_eq!(heading_level_index(&HeadingLevel::H6), 5);
+    }
+
+    // --- Folding ---
+
+    #[test]
+    fn fold_hides_children() {
+        let blocks = parse_markdown(SAMPLE_MD);
+        let mut headings = build_headings(&blocks);
+        // Fold the first H2 ("Section One" at index 1)
+        headings[1].folded = true;
+        let h2_bi = headings[1].block_index;
+        let h3_bi = headings[2].block_index; // subsection is inside
+
+        // Block right after the folded H2 should be hidden
+        assert!(is_block_folded(h2_bi + 1, &headings));
+        // The H3 inside should also be hidden
+        assert!(is_block_folded(h3_bi, &headings));
+        // The second H2 should NOT be hidden (same level = new section)
+        assert!(!is_block_folded(headings[3].block_index, &headings));
+    }
+
+    #[test]
+    fn fold_h1_hides_everything() {
+        let blocks = parse_markdown(SAMPLE_MD);
+        let mut headings = build_headings(&blocks);
+        headings[0].folded = true;
+        // Everything after H1 should be folded
+        for bi in (headings[0].block_index + 1)..blocks.len() {
+            assert!(is_block_folded(bi, &headings), "block {} should be folded", bi);
+        }
+    }
+
+    // --- Rendering pipeline ---
+
+    #[test]
+    fn render_produces_valid_image() {
+        let fonts = test_fonts();
+        let blocks = parse_markdown(SAMPLE_MD);
+        let mut headings = build_headings(&blocks);
+        let (img, positions, margin_left) = render_markdown(&blocks, &mut headings, 800, &fonts);
+
+        assert!(img.width() == 800);
+        assert!(img.height() > 100, "image too short: {}", img.height());
+        assert!(!positions.is_empty());
+        assert!(margin_left > 0);
+    }
+
+    #[test]
+    fn render_headings_have_positions() {
+        let fonts = test_fonts();
+        let blocks = parse_markdown(SAMPLE_MD);
+        let mut headings = build_headings(&blocks);
+        render_markdown(&blocks, &mut headings, 800, &fonts);
+
+        // All headings should have y_pos set (monotonically increasing)
+        for i in 1..headings.len() {
+            assert!(
+                headings[i].y_pos > headings[i - 1].y_pos,
+                "heading {} y_pos ({}) should be > heading {} y_pos ({})",
+                i, headings[i].y_pos, i - 1, headings[i - 1].y_pos,
+            );
+        }
+        // All should have nonzero heading_height
+        for h in &headings {
+            assert!(h.heading_height > 0);
+        }
+    }
+
+    #[test]
+    fn render_folded_is_shorter() {
+        let fonts = test_fonts();
+        let blocks = parse_markdown(SAMPLE_MD);
+
+        let mut headings_open = build_headings(&blocks);
+        let (img_open, _, _) = render_markdown(&blocks, &mut headings_open, 800, &fonts);
+
+        let mut headings_folded = build_headings(&blocks);
+        headings_folded[0].folded = true;
+        let (img_folded, _, _) = render_markdown(&blocks, &mut headings_folded, 800, &fonts);
+
+        assert!(
+            img_folded.height() < img_open.height(),
+            "folded ({}) should be shorter than open ({})",
+            img_folded.height(), img_open.height(),
+        );
+    }
+
+    // --- AppState integration ---
+
+    #[test]
+    fn app_state_navigation() {
+        let fonts = test_fonts();
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+
+        assert_eq!(state.current_heading, Some(0));
+        assert!(state.navigate_heading(1));
+        assert_eq!(state.current_heading, Some(1));
+        assert!(state.navigate_heading(1));
+        assert_eq!(state.current_heading, Some(2));
+        // Navigate back
+        assert!(state.navigate_heading(-1));
+        assert_eq!(state.current_heading, Some(1));
+    }
+
+    #[test]
+    fn app_state_navigation_bounds() {
+        let fonts = test_fonts();
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+
+        // Can't go before first heading
+        assert!(!state.navigate_heading(-1));
+        assert_eq!(state.current_heading, Some(0));
+
+        // Navigate to last, then can't go further
+        while state.navigate_heading(1) {}
+        let last = state.current_heading.unwrap();
+        assert!(!state.navigate_heading(1));
+        assert_eq!(state.current_heading, Some(last));
+    }
+
+    #[test]
+    fn app_state_fold_toggle() {
+        let fonts = test_fonts();
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let h_before = state.img.height();
+
+        state.toggle_fold(&fonts);
+        assert!(state.headings[0].folded);
+        assert!(state.img.height() < h_before);
+
+        state.toggle_fold(&fonts);
+        assert!(!state.headings[0].folded);
+        assert_eq!(state.img.height(), h_before);
+    }
+
+    #[test]
+    fn app_state_scroll() {
+        let fonts = test_fonts();
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 200); // small viewport
+
+        assert_eq!(state.scroll_y, 0);
+        assert!(state.scroll(100));
+        assert_eq!(state.scroll_y, 100);
+        // Can't scroll past max
+        state.scroll(999999);
+        assert!(state.scroll_y <= state.max_scroll());
+        // Can't scroll negative
+        assert!(!state.scroll(-999999) || state.scroll_y == 0);
+    }
+
+    #[test]
+    fn app_state_cursor_info() {
+        let fonts = test_fonts();
+        let state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let ci = state.cursor_info();
+        assert!(ci.is_some());
+        let (x, y, h, color) = ci.unwrap();
+        assert!(x < 800);
+        assert!(h > 0);
+        // Cursor color should match theme
+        assert_eq!(color, state.theme.cursor_color.0);
+        let _ = y; // just verify it exists
+    }
+
+    // --- Search ---
+
+    #[test]
+    fn search_finds_text() {
+        let fonts = test_fonts();
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+
+        state.search_query = "bold".to_string();
+        state.execute_search(&fonts);
+        assert!(!state.search_matches.is_empty(), "should find 'bold'");
+        assert!(!state.search_highlights.is_empty());
+    }
+
+    #[test]
+    fn search_case_insensitive() {
+        let fonts = test_fonts();
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+
+        state.search_query = "HELLO".to_string();
+        state.execute_search(&fonts);
+        assert!(!state.search_matches.is_empty(), "should find 'HELLO' case-insensitively");
+    }
+
+    #[test]
+    fn search_no_match() {
+        let fonts = test_fonts();
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+
+        state.search_query = "zzzznonexistent".to_string();
+        state.execute_search(&fonts);
+        assert!(state.search_matches.is_empty());
+        assert!(state.search_highlights.is_empty());
+    }
+
+    #[test]
+    fn search_navigation_wraps() {
+        let fonts = test_fonts();
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+
+        state.search_query = "section".to_string();
+        state.execute_search(&fonts);
+        if state.search_matches.len() >= 2 {
+            let first = state.search_current;
+            state.navigate_search(true);
+            assert_ne!(state.search_current, first);
+            // Wrap backwards past 0
+            state.search_current = 0;
+            state.navigate_search(false);
+            assert_eq!(state.search_current, state.search_matches.len() - 1);
+        }
+    }
+
+    #[test]
+    fn search_in_code_block() {
+        let fonts = test_fonts();
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+
+        state.search_query = "println".to_string();
+        state.execute_search(&fonts);
+        assert!(!state.search_matches.is_empty(), "should find text in code blocks");
+    }
+
+    #[test]
+    fn search_in_table() {
+        let fonts = test_fonts();
+        let md = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n";
+        let mut state = AppState::new(md, &fonts, 800, 600);
+
+        state.search_query = "alice".to_string();
+        state.execute_search(&fonts);
+        assert!(!state.search_matches.is_empty(), "should find text in tables");
+    }
+
+    // --- Word wrapping ---
+
+    #[test]
+    fn wrap_spans_respects_width() {
+        let fonts = test_fonts();
+        let scale = PxScale::from(18.0);
+        let spans = vec![Span {
+            text: "This is a fairly long sentence that should wrap at some point when rendered".to_string(),
+            style: SpanStyle::Normal,
+        }];
+        let lines = wrap_spans(&spans, &fonts, scale, 200);
+        assert!(lines.len() > 1, "should wrap into multiple lines for narrow width");
+
+        let lines_wide = wrap_spans(&spans, &fonts, scale, 2000);
+        assert_eq!(lines_wide.len(), 1, "should fit in one line for wide width");
+    }
+
+    // --- Metadata parsing ---
+
+    #[test]
+    fn metadata_missing() {
+        let (entries, rest) = parse_metadata("# Just a heading\n");
+        assert!(entries.is_empty());
+        assert_eq!(rest, "# Just a heading\n");
+    }
+
+    #[test]
+    fn metadata_unclosed() {
+        let (entries, rest) = parse_metadata("---\nkey: val\nno closing fence\n");
+        assert!(entries.is_empty());
+        assert!(rest.contains("key: val"));
+    }
+
+    // --- Display viewport ---
+
+    #[test]
+    fn display_viewport_does_not_panic() {
+        let fonts = test_fonts();
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let mut buf: Vec<u8> = Vec::new();
+        let ci = state.cursor_info();
+        let result = display_viewport(
+            &mut buf, &state.img, state.scroll_y,
+            state.vp_width, state.vp_height, &mut state.frame,
+            None, ci, &state.search_highlights, state.search_current,
+        );
+        assert!(result.is_ok());
+        assert!(!buf.is_empty(), "should produce kitty protocol output");
+    }
+
+    #[test]
+    fn display_viewport_with_search_overlay() {
+        let fonts = test_fonts();
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        state.search_query = "bold".to_string();
+        state.execute_search(&fonts);
+
+        let search_bar = render_search_bar(
+            &state.search_query,
+            Some((1, state.search_matches.len())),
+            800, &fonts,
+        );
+        let mut buf: Vec<u8> = Vec::new();
+        let ci = state.cursor_info();
+        let result = display_viewport(
+            &mut buf, &state.img, state.scroll_y,
+            state.vp_width, state.vp_height, &mut state.frame,
+            Some(&search_bar), ci,
+            &state.search_highlights, state.search_current,
+        );
+        assert!(result.is_ok());
+    }
+
+    // --- Resize ---
+
+    #[test]
+    fn render_at_different_widths() {
+        let fonts = test_fonts();
+        for width in [400, 800, 1200, 1920] {
+            let blocks = parse_markdown(SAMPLE_MD);
+            let mut headings = build_headings(&blocks);
+            let (img, _, _) = render_markdown(&blocks, &mut headings, width, &fonts);
+            assert_eq!(img.width(), width);
+            assert!(img.height() > 0);
+        }
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn empty_document() {
+        let fonts = test_fonts();
+        let state = AppState::new("", &fonts, 800, 600);
+        assert!(state.headings.is_empty());
+        assert!(state.current_heading.is_none());
+        assert!(state.img.height() > 0);
+    }
+
+    #[test]
+    fn headings_only() {
+        let fonts = test_fonts();
+        let md = "# One\n## Two\n## Three\n";
+        let state = AppState::new(md, &fonts, 800, 600);
+        assert_eq!(state.headings.len(), 3);
+    }
+
+    #[test]
+    fn navigation_skips_folded_headings() {
+        let fonts = test_fonts();
+        let md = "# Top\n## A\n### A.1\n## B\n";
+        let mut state = AppState::new(md, &fonts, 800, 600);
+
+        // Fold "## A" (index 1) — should hide "### A.1" (index 2)
+        state.current_heading = Some(1);
+        state.toggle_fold(&fonts);
+
+        // Navigate forward from "## A" should skip "### A.1" and go to "## B"
+        state.navigate_heading(1);
+        assert_eq!(state.current_heading, Some(3));
+    }
+}
