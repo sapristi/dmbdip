@@ -8,8 +8,11 @@ A Rust program that renders markdown files as images and displays them in the te
 
 ```
 dmbdip <markdown-file>
+dmbdip <directory>
 dmbdip --help
 ```
+
+When given a directory, opens a two-pane file browser: text file listing on the left, markdown preview on the right.
 
 **Requirements:** Kitty terminal (or any terminal supporting the Kitty graphics protocol), DejaVu fonts installed.
 
@@ -42,6 +45,16 @@ cp target/release/dmbdip ~/.local/bin/
 | n/N | Next/previous search match |
 | h | Show keybindings help overlay |
 | q/Esc/Ctrl-C | Quit |
+
+### File Browser Mode
+
+| Key | Action |
+|-----|--------|
+| Up/Down, j/k | Move cursor |
+| Enter | Preview selected markdown file |
+| Right / l | Enter subfolder |
+| Left / h | Go to parent directory |
+| q/Esc | Quit |
 
 ## Development
 

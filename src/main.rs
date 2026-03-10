@@ -11,6 +11,7 @@ use imageproc::drawing::{draw_filled_rect_mut, draw_line_segment_mut, draw_text_
 use imageproc::rect::Rect;
 use pulldown_cmark::{Event as MdEvent, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::io::{self, BufWriter, Write};
+use std::path::{Path, PathBuf};
 
 const SCROLL_STEP: u32 = 40;
 const MARGIN_LEFT: u32 = 20;
@@ -1633,6 +1634,299 @@ fn render_search_bar(
     bar
 }
 
+// --- File browser ---
+
+#[derive(Clone, Debug)]
+enum BrowserEntry {
+    Dir(String),
+    File(String),
+}
+
+fn scan_directory(dir: &Path) -> Vec<BrowserEntry> {
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            if let Ok(ft) = entry.file_type() {
+                if ft.is_dir() {
+                    dirs.push(name);
+                } else if name.ends_with(".md") || name.ends_with(".MD") {
+                    files.push(name);
+                }
+            }
+        }
+    }
+    dirs.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    files.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    let mut result = Vec::new();
+    for d in dirs {
+        result.push(BrowserEntry::Dir(d));
+    }
+    for f in files {
+        result.push(BrowserEntry::File(f));
+    }
+    result
+}
+
+struct BrowserState {
+    current_dir: PathBuf,
+    entries: Vec<BrowserEntry>,
+    cursor: usize,
+    preview_img: Option<RgbImage>,
+    frame: u32,
+}
+
+const BROWSER_LEFT_COLS: u16 = 35;
+
+fn draw_file_list(out: &mut impl Write, state: &BrowserState, term_rows: u16) -> io::Result<()> {
+    let max_display = (term_rows.saturating_sub(2)) as usize;
+    // Header: current directory
+    execute!(out, cursor::MoveTo(0, 0))?;
+    let dir_str = state.current_dir.display().to_string();
+    let header = if dir_str.len() > BROWSER_LEFT_COLS as usize - 1 {
+        format!(
+            "\u{2026}{}",
+            &dir_str[dir_str.len() - (BROWSER_LEFT_COLS as usize - 2)..]
+        )
+    } else {
+        dir_str
+    };
+    write!(
+        out,
+        "\x1b[1;36m{:<width$}\x1b[0m",
+        header,
+        width = BROWSER_LEFT_COLS as usize
+    )?;
+
+    let scroll_offset = if state.cursor >= max_display {
+        state.cursor - max_display + 1
+    } else {
+        0
+    };
+
+    let total = state.entries.len();
+    for i in 0..max_display {
+        let idx = scroll_offset + i;
+        execute!(out, cursor::MoveTo(0, (i + 1) as u16))?;
+        if idx < total {
+            let is_selected = idx == state.cursor;
+            let (prefix, name_display, color, sel_color) = match &state.entries[idx] {
+                BrowserEntry::Dir(name) => (" > ", format!("{}/", name), "\x1b[1;34m", "\x1b[7;1;34m"),
+                BrowserEntry::File(name) => ("   ", name.clone(), "\x1b[36m", "\x1b[7;36m"),
+            };
+            let display_width = BROWSER_LEFT_COLS as usize;
+            let mut line = format!("{}{}", prefix, name_display);
+            if line.len() > display_width {
+                line.truncate(display_width);
+            }
+            if is_selected {
+                write!(
+                    out,
+                    "{}{:<width$}\x1b[0m",
+                    sel_color,
+                    line,
+                    width = display_width
+                )?;
+            } else {
+                write!(
+                    out,
+                    "{}{:<width$}\x1b[0m",
+                    color,
+                    line,
+                    width = display_width
+                )?;
+            }
+        } else {
+            write!(
+                out,
+                "{:<width$}",
+                "",
+                width = BROWSER_LEFT_COLS as usize
+            )?;
+        }
+    }
+    out.flush()
+}
+
+fn kitty_display_at(
+    w: &mut impl Write,
+    data: &[u8],
+    width: u32,
+    height: u32,
+    col: u16,
+    new_id: u32,
+    old_id: u32,
+) -> io::Result<()> {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+    let chunk_size = 4096;
+    let bytes = b64.as_bytes();
+    let total_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
+
+    write!(w, "\x1b[1;{}H", col + 1)?;
+
+    for (i, chunk) in bytes.chunks(chunk_size).enumerate() {
+        let chunk_str = std::str::from_utf8(chunk).unwrap();
+        let is_last = i == total_chunks - 1;
+        let m = if is_last { 0 } else { 1 };
+
+        if i == 0 {
+            write!(
+                w,
+                "\x1b_Ga=T,i={new_id},f=24,s={width},v={height},q=2,C=1,m={m};{chunk_str}\x1b\\"
+            )?;
+        } else {
+            write!(w, "\x1b_Gm={m};{chunk_str}\x1b\\")?;
+        }
+    }
+
+    write!(w, "\x1b_Ga=d,d=I,i={old_id},q=2\x1b\\")?;
+    w.flush()
+}
+
+fn browser_clear_preview(out: &mut impl Write) -> io::Result<()> {
+    write!(
+        out,
+        "\x1b_Ga=d,d=I,i=1,q=2\x1b\\\x1b_Ga=d,d=I,i=2,q=2\x1b\\"
+    )?;
+    execute!(out, terminal::Clear(ClearType::All))
+}
+
+fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u32) -> io::Result<()> {
+    let (_term_cols, term_rows) = terminal::size()?;
+    let mut state = BrowserState {
+        current_dir: dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
+        entries: scan_directory(dir),
+        cursor: 0,
+        preview_img: None,
+        frame: 1,
+    };
+
+    let stdout = io::stdout();
+    terminal::enable_raw_mode()?;
+    {
+        let mut out = BufWriter::new(stdout.lock());
+        execute!(
+            out,
+            terminal::EnterAlternateScreen,
+            cursor::Hide,
+            terminal::Clear(ClearType::All)
+        )?;
+        draw_file_list(&mut out, &state, term_rows)?;
+    }
+
+    loop {
+        if let Event::Key(KeyEvent {
+            code,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event::read()?
+        {
+            let needs_redraw = match code {
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if state.cursor + 1 < state.entries.len() {
+                        state.cursor += 1;
+                    }
+                    true
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if state.cursor > 0 {
+                        state.cursor -= 1;
+                    }
+                    true
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    if let Some(BrowserEntry::Dir(name)) = state.entries.get(state.cursor).cloned()
+                    {
+                        let new_dir = state.current_dir.join(&name);
+                        state.entries = scan_directory(&new_dir);
+                        state.current_dir = new_dir.canonicalize().unwrap_or(new_dir);
+                        state.cursor = 0;
+                        state.preview_img = None;
+                        let mut out = BufWriter::new(stdout.lock());
+                        browser_clear_preview(&mut out)?;
+                    }
+                    true
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if let Some(parent) = state.current_dir.parent() {
+                        let parent = parent.to_path_buf();
+                        state.entries = scan_directory(&parent);
+                        state.current_dir = parent.canonicalize().unwrap_or(parent);
+                        state.cursor = 0;
+                        state.preview_img = None;
+                        let mut out = BufWriter::new(stdout.lock());
+                        browser_clear_preview(&mut out)?;
+                    }
+                    true
+                }
+                KeyCode::Enter => {
+                    if let Some(BrowserEntry::File(name)) =
+                        state.entries.get(state.cursor).cloned()
+                    {
+                        let file_path = state.current_dir.join(&name);
+                        if let Ok(source) = std::fs::read_to_string(&file_path) {
+                            let preview_width =
+                                vp_width.saturating_sub(BROWSER_LEFT_COLS as u32 * 8);
+                            let blocks = parse_markdown(&source);
+                            let mut headings = build_headings(&blocks);
+                            let (img, _, _) =
+                                render_markdown(&blocks, &mut headings, preview_width, fonts);
+                            let preview_h = vp_height.min(img.height());
+                            let src_w = preview_width.min(img.width());
+                            let raw = img.as_raw();
+                            let img_stride = img.width() as usize * 3;
+                            let mut viewport_data =
+                                Vec::with_capacity(src_w as usize * preview_h as usize * 3);
+                            for row in 0..preview_h as usize {
+                                let offset = row * img_stride;
+                                viewport_data.extend_from_slice(
+                                    &raw[offset..offset + src_w as usize * 3],
+                                );
+                            }
+                            let mut out = BufWriter::new(stdout.lock());
+                            let new_id = state.frame;
+                            let old_id = if new_id == 1 { 2 } else { 1 };
+                            state.frame = old_id;
+                            kitty_display_at(
+                                &mut out,
+                                &viewport_data,
+                                src_w,
+                                preview_h,
+                                BROWSER_LEFT_COLS + 1,
+                                new_id,
+                                old_id,
+                            )?;
+                            state.preview_img = Some(img);
+                        }
+                    }
+                    true
+                }
+                _ => false,
+            };
+            if needs_redraw {
+                let mut out = BufWriter::new(stdout.lock());
+                draw_file_list(&mut out, &state, term_rows)?;
+            }
+        }
+    }
+
+    {
+        let mut out = BufWriter::new(stdout.lock());
+        write!(
+            out,
+            "\x1b_Ga=d,d=I,i=1,q=2\x1b\\\x1b_Ga=d,d=I,i=2,q=2\x1b\\"
+        )?;
+        execute!(out, cursor::Show, terminal::LeaveAlternateScreen)?;
+    }
+    terminal::disable_raw_mode()?;
+    Ok(())
+}
+
 // --- Main ---
 
 fn main() -> io::Result<()> {
@@ -1641,10 +1935,11 @@ fn main() -> io::Result<()> {
     if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
         eprintln!("dmbdip - Display Markdown But Do it Pretty");
         eprintln!();
-        eprintln!("Usage: dmbdip <markdown-file>");
+        eprintln!("Usage: dmbdip <markdown-file-or-directory>");
         eprintln!();
         eprintln!("Renders a markdown file as an image and displays it in the terminal");
-        eprintln!("using the Kitty graphics protocol.");
+        eprintln!("using the Kitty graphics protocol. When given a directory, opens a");
+        eprintln!("file browser showing markdown files and subfolders.");
         eprintln!();
         eprintln!("Keybindings:");
         for &(key, desc) in KEYBINDINGS {
@@ -1654,12 +1949,17 @@ fn main() -> io::Result<()> {
     }
 
     let file_path = &args[1];
-
-    let source = std::fs::read_to_string(file_path)
-        .unwrap_or_else(|e| panic!("Cannot read {}: {}", file_path, e));
+    let path = Path::new(file_path);
 
     let fonts = load_fonts();
     let (vp_width, vp_height) = get_viewport_pixel_size()?;
+
+    if path.is_dir() {
+        return run_browser(path, &fonts, vp_width, vp_height);
+    }
+
+    let source = std::fs::read_to_string(file_path)
+        .unwrap_or_else(|e| panic!("Cannot read {}: {}", file_path, e));
 
     eprintln!("Rendering markdown...");
     let mut state = AppState::new(&source, &fonts, vp_width, vp_height);

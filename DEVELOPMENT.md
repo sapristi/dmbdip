@@ -38,3 +38,4 @@
 - [x] Task 6: --help flag with usage and keybindings
 - [x] Task 7: Help overlay when pressing `h`
 - [x] Task 8: Vim-style search with `/`, `n`/`N` navigation
+- [x] Task 9: File browser mode with two-pane layout
