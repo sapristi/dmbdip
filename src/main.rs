@@ -334,6 +334,13 @@ fn parse_markdown(source: &str) -> Vec<Block> {
                     });
                 }
             }
+            MdEvent::End(TagEnd::Item) => {
+                // Commit tight list items that weren't wrapped in Paragraph events
+                let s = std::mem::take(&mut spans);
+                if !s.is_empty() {
+                    blocks.push(Block::Paragraph { spans: s });
+                }
+            }
             MdEvent::SoftBreak | MdEvent::HardBreak => {
                 let target = if in_table { &mut cell_spans } else { &mut spans };
                 target.push(Span {
@@ -343,6 +350,11 @@ fn parse_markdown(source: &str) -> Vec<Block> {
             }
             _ => {}
         }
+    }
+
+    // Flush any remaining uncommitted spans
+    if !spans.is_empty() {
+        blocks.push(Block::Paragraph { spans });
     }
 
     blocks
