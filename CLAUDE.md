@@ -1,4 +1,4 @@
-# mdbdp - Markdown Display as Beautiful Pictures
+# dmbdip - Display Markdown But Do it Pretty
 
 A Rust program that renders markdown files as images and displays them in the terminal (Kitty graphics protocol).
 
