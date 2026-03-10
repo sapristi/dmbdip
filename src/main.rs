@@ -1555,11 +1555,13 @@ fn compute_block_highlights(
 
 fn render_help_overlay(vp_width: u32, vp_height: u32, fonts: &Fonts) -> RgbImage {
     let mut img = RgbImage::from_pixel(vp_width, vp_height, Rgb([30, 30, 40]));
+    let content_width = (vp_width - MARGIN_LEFT - MARGIN_RIGHT).min(MAX_CONTENT_WIDTH);
+    let margin_left = (vp_width - content_width) / 2;
     let scale = PxScale::from(20.0);
     let title_scale = PxScale::from(28.0);
     let line_height = 32i32;
-    let x = 40i32;
-    let mut y = 40i32;
+    let x = margin_left as i32;
+    let mut y = (PARAGRAPH_GAP + H1_EXTRA_MARGIN) as i32;
 
     draw_text_mut(
         &mut img,
@@ -1586,11 +1588,12 @@ fn render_help_overlay(vp_width: u32, vp_height: u32, fonts: &Fonts) -> RgbImage
         ("q / Esc", "Quit"),
     ];
 
+    let indent_x = x + BLOCK_INDENT as i32;
     for (key, desc) in &bindings {
         draw_text_mut(
             &mut img,
             Rgb([230, 180, 80]),
-            x,
+            indent_x,
             y,
             scale,
             &fonts.bold,
@@ -1599,7 +1602,7 @@ fn render_help_overlay(vp_width: u32, vp_height: u32, fonts: &Fonts) -> RgbImage
         draw_text_mut(
             &mut img,
             Rgb([220, 220, 220]),
-            x + 220,
+            indent_x + 220,
             y,
             scale,
             &fonts.regular,
@@ -1612,7 +1615,7 @@ fn render_help_overlay(vp_width: u32, vp_height: u32, fonts: &Fonts) -> RgbImage
     draw_text_mut(
         &mut img,
         Rgb([140, 140, 160]),
-        x,
+        indent_x,
         y,
         scale,
         &fonts.regular,
