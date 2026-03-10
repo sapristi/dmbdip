@@ -34,7 +34,7 @@ cp target/release/mdbdp ~/.local/bin/
 | Up/Down | Navigate between headings |
 | Left/Right/Tab | Toggle fold open/close |
 | Space | Scroll down |
-| Shift+Space | Scroll up |
+| Ctrl+Space | Scroll up |
 | j/k | Small scroll steps |
 | PgUp/PgDn | Half-page scroll |
 | Home/End | Jump to top/bottom |

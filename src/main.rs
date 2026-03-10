@@ -24,6 +24,7 @@ const BLOCK_INDENT: u32 = 24;
 
 // --- Theme ---
 
+#[derive(Clone, Copy)]
 struct Theme {
     bg: Rgb<u8>,
     body_color: Rgb<u8>,
@@ -586,7 +587,7 @@ fn draw_spans(
         }
 
         draw_text_mut(img, color, cx as i32, y as i32, scale, font, &span.text);
-        let w = text_size(scale, span.font(fonts), &span.text).0;
+        let w = text_size(scale, font, &span.text).0;
         cx += w;
     }
     cx
@@ -632,29 +633,15 @@ fn render_markdown(
                     y += H1_EXTRA_MARGIN;
                 }
 
-                let (size, color) = heading_style(level, &theme);
-                let scale = PxScale::from(size);
-
                 let hi = heading_idx;
                 heading_idx += 1;
 
-                let number = &headings[hi].number;
-                let plain = spans_to_plain(spans);
-
-                let numbered_text = format!("{} {}", number, plain);
-
-                let lines = wrap_spans(
-                    &[Span {
-                        text: numbered_text,
-                        style: SpanStyle::Bold,
-                    }],
-                    fonts,
-                    scale,
-                    content_width,
+                let (lines, size, line_height) = wrap_heading_text(
+                    &headings[hi], spans, fonts, &theme, content_width,
                 );
-                let line_height = (size * 1.3) as u32;
-                let heading_total_h =
-                    lines.len() as u32 * line_height;
+                let (_, color) = heading_style(level, &theme);
+                let scale = PxScale::from(size);
+                let heading_total_h = lines.len() as u32 * line_height;
 
                 // Record Y position for navigation
                 headings[hi].y_pos = y;
@@ -719,6 +706,35 @@ fn render_markdown(
     (img, block_positions, margin_left)
 }
 
+fn wrap_code_lines(text: &str, fonts: &Fonts, scale: PxScale, inner_width: u32) -> Vec<Vec<Vec<Span>>> {
+    text.lines()
+        .map(|line| {
+            wrap_spans(
+                &[Span { text: line.to_string(), style: SpanStyle::Code }],
+                fonts, scale, inner_width,
+            )
+        })
+        .collect()
+}
+
+fn wrap_heading_text(
+    heading: &HeadingInfo,
+    spans: &[Span],
+    fonts: &Fonts,
+    theme: &Theme,
+    content_width: u32,
+) -> (Vec<Vec<Span>>, f32, u32) {
+    let (size, _) = heading_style(&heading.level, theme);
+    let scale = PxScale::from(size);
+    let numbered_text = format!("{} {}", heading.number, spans_to_plain(spans));
+    let lines = wrap_spans(
+        &[Span { text: numbered_text, style: SpanStyle::Bold }],
+        fonts, scale, content_width,
+    );
+    let line_height = (size * 1.3) as u32;
+    (lines, size, line_height)
+}
+
 fn heading_style(level: &HeadingLevel, theme: &Theme) -> (f32, Rgb<u8>) {
     match level {
         HeadingLevel::H1 => (theme.h1_size, theme.h1_color),
@@ -754,23 +770,11 @@ fn compute_total_height(
                 if matches!(level, HeadingLevel::H1) && h > PARAGRAPH_GAP {
                     h += H1_EXTRA_MARGIN;
                 }
-                let (size, _) = heading_style(level, theme);
-                let scale = PxScale::from(size);
                 let hi = heading_idx;
                 heading_idx += 1;
-                let number = &headings[hi].number;
-                let plain = spans_to_plain(spans);
-                let numbered_text = format!("{} {}", number, plain);
-                let lines = wrap_spans(
-                    &[Span {
-                        text: numbered_text,
-                        style: SpanStyle::Bold,
-                    }],
-                    fonts,
-                    scale,
-                    content_width,
+                let (lines, _, line_height) = wrap_heading_text(
+                    &headings[hi], spans, fonts, theme, content_width,
                 );
-                let line_height = (size * 1.3) as u32;
                 h += lines.len() as u32 * line_height + PARAGRAPH_GAP;
             }
             Block::Paragraph { spans } => {
@@ -782,25 +786,10 @@ fn compute_total_height(
             }
             Block::CodeBlock { text } => {
                 let scale = PxScale::from(theme.body_size);
-                let mono_lines: Vec<&str> = text.lines().collect();
                 let line_height = (theme.body_size * 1.4) as u32;
                 let indented_width = content_width - BLOCK_INDENT;
-                let mut total_lines = 0u32;
-                for line in &mono_lines {
-                    let wrapped = wrap_spans(
-                        &[Span {
-                            text: line.to_string(),
-                            style: SpanStyle::Code,
-                        }],
-                        fonts,
-                        scale,
-                        indented_width - 20,
-                    );
-                    total_lines += wrapped.len() as u32;
-                }
-                if total_lines == 0 {
-                    total_lines = 1;
-                }
+                let wrapped = wrap_code_lines(text, fonts, scale, indented_width - 20);
+                let total_lines = wrapped.iter().map(|w| w.len() as u32).sum::<u32>().max(1);
                 h += total_lines * line_height + 20 + PARAGRAPH_GAP;
             }
             Block::Table { headers, rows } => {
@@ -866,25 +855,8 @@ fn render_code_block(
     let pad = 10u32;
     let inner_width = content_width - pad * 2;
 
-    let source_lines: Vec<&str> = text.lines().collect();
-    let mut total_lines = 0u32;
-    let mut wrapped_lines: Vec<Vec<Vec<Span>>> = Vec::new();
-    for line in &source_lines {
-        let w = wrap_spans(
-            &[Span {
-                text: line.to_string(),
-                style: SpanStyle::Code,
-            }],
-            fonts,
-            scale,
-            inner_width,
-        );
-        total_lines += w.len() as u32;
-        wrapped_lines.push(w);
-    }
-    if total_lines == 0 {
-        total_lines = 1;
-    }
+    let wrapped_lines = wrap_code_lines(text, fonts, scale, inner_width);
+    let total_lines = wrapped_lines.iter().map(|w| w.len() as u32).sum::<u32>().max(1);
     let block_height = total_lines * line_height + pad * 2;
 
     draw_filled_rect_mut(
@@ -1049,6 +1021,20 @@ fn render_table(
     y
 }
 
+const KEYBINDINGS: &[(&str, &str)] = &[
+    ("Up / Down", "Navigate between headings"),
+    ("Left / Right / Tab", "Toggle fold open/close"),
+    ("Space", "Scroll down"),
+    ("Ctrl+Space", "Scroll up"),
+    ("j / k", "Small scroll steps"),
+    ("PgUp / PgDn", "Half-page scroll"),
+    ("Home / End", "Jump to top/bottom"),
+    ("/", "Search text"),
+    ("n / N", "Next/previous search match"),
+    ("h", "Show this help"),
+    ("q / Esc", "Quit"),
+];
+
 // --- Kitty protocol ---
 
 fn kitty_display_raw(
@@ -1087,6 +1073,36 @@ fn kitty_display_raw(
     w.flush()
 }
 
+fn paint_rect(
+    data: &mut [u8],
+    stride: usize,
+    x: u32, y: u32, w: u32, h: u32,
+    max_w: u32,
+    color: [u8; 3],
+    alpha: f32,
+) {
+    let inv = 1.0 - alpha;
+    for row in y as usize..(y + h) as usize {
+        for px in 0..w as usize {
+            let xi = x as usize + px;
+            if xi < max_w as usize {
+                let offset = row * stride + xi * 3;
+                if offset + 2 < data.len() {
+                    if alpha >= 1.0 {
+                        data[offset] = color[0];
+                        data[offset + 1] = color[1];
+                        data[offset + 2] = color[2];
+                    } else {
+                        data[offset] = (data[offset] as f32 * inv + color[0] as f32 * alpha) as u8;
+                        data[offset + 1] = (data[offset + 1] as f32 * inv + color[1] as f32 * alpha) as u8;
+                        data[offset + 2] = (data[offset + 2] as f32 * inv + color[2] as f32 * alpha) as u8;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// cursor_info: Option<(x, y_in_image, height, color)>
 fn display_viewport(
     w: &mut impl Write,
@@ -1119,51 +1135,21 @@ fn display_viewport(
             continue;
         }
         let is_current = midx == current_match;
-        let (color, alpha): ([u8; 3], f32) = if is_current {
+        let (color, alpha) = if is_current {
             ([255, 180, 50], 0.35)
         } else {
             ([180, 180, 60], 0.20)
         };
-        let vp_y_start = hy.saturating_sub(scroll_y) as usize;
-        let vp_y_end = ((hy + hh).saturating_sub(scroll_y) as usize).min(src_h as usize);
-        for row in vp_y_start..vp_y_end {
-            for px in 0..hw as usize {
-                let x = hx as usize + px;
-                if x < src_w as usize {
-                    let offset = row * stride + x * 3;
-                    if offset + 2 < viewport_data.len() {
-                        let inv = 1.0 - alpha;
-                        viewport_data[offset] =
-                            (viewport_data[offset] as f32 * inv + color[0] as f32 * alpha) as u8;
-                        viewport_data[offset + 1] =
-                            (viewport_data[offset + 1] as f32 * inv + color[1] as f32 * alpha)
-                                as u8;
-                        viewport_data[offset + 2] =
-                            (viewport_data[offset + 2] as f32 * inv + color[2] as f32 * alpha)
-                                as u8;
-                    }
-                }
-            }
-        }
+        paint_rect(&mut viewport_data, stride, hx, hy.saturating_sub(scroll_y),
+            hw, (hy + hh).saturating_sub(scroll_y).min(src_h) - hy.saturating_sub(scroll_y),
+            src_w, color, alpha);
     }
 
     // Draw cursor bar onto viewport data
     if let Some((cx, cy_img, ch, color)) = cursor_info {
-        let vp_y_start = cy_img.saturating_sub(scroll_y) as usize;
-        let vp_y_end = ((cy_img + ch).saturating_sub(scroll_y) as usize).min(src_h as usize);
-        for row in vp_y_start..vp_y_end {
-            for px in 0..CURSOR_WIDTH as usize {
-                let x = cx as usize + px;
-                if x < src_w as usize {
-                    let offset = row * stride + x * 3;
-                    if offset + 2 < viewport_data.len() {
-                        viewport_data[offset] = color[0];
-                        viewport_data[offset + 1] = color[1];
-                        viewport_data[offset + 2] = color[2];
-                    }
-                }
-            }
-        }
+        paint_rect(&mut viewport_data, stride, cx, cy_img.saturating_sub(scroll_y),
+            CURSOR_WIDTH, (cy_img + ch).saturating_sub(scroll_y).min(src_h) - cy_img.saturating_sub(scroll_y),
+            src_w, color, 1.0);
     }
 
     // Draw overlay bar at bottom if present
@@ -1185,7 +1171,7 @@ fn display_viewport(
     }
 
     let new_id = *frame;
-    let old_id = if *frame == 1 { 2 } else { 1 };
+    let old_id = if new_id == 1 { 2 } else { 1 };
     *frame = old_id;
 
     kitty_display_raw(w, &viewport_data, src_w, src_h, new_id, old_id)
@@ -1216,6 +1202,7 @@ struct AppState {
     img: RgbImage,
     block_y_positions: Vec<(usize, u32)>, // (block_index, y_pos)
     margin_left: u32,
+    theme: Theme,
     search_mode: bool,
     search_query: String,
     search_matches: Vec<usize>, // indices into block_y_positions
@@ -1240,6 +1227,7 @@ impl AppState {
             img: RgbImage::new(1, 1), // placeholder
             block_y_positions: Vec::new(),
             margin_left: 0,
+            theme: default_theme(),
             search_mode: false,
             search_query: String::new(),
             search_matches: Vec::new(),
@@ -1332,13 +1320,19 @@ impl AppState {
     fn cursor_info(&self) -> Option<(u32, u32, u32, [u8; 3])> {
         let hi = self.current_heading?;
         let heading = &self.headings[hi];
-        let theme = default_theme();
-        let (size, _) = heading_style(&heading.level, &theme);
+        let (size, _) = heading_style(&heading.level, &self.theme);
         // Place cursor to the left of the fold arrow area
         let arrow_space = (size * 0.5) as u32 + 4;
         let cursor_x = self.margin_left.saturating_sub(arrow_space + CURSOR_MARGIN + CURSOR_WIDTH);
-        let c = theme.cursor_color.0;
+        let c = self.theme.cursor_color.0;
         Some((cursor_x, heading.y_pos, heading.heading_height, c))
+    }
+
+    fn next_frame(&mut self) -> (u32, u32) {
+        let new_id = self.frame;
+        let old_id = if self.frame == 1 { 2 } else { 1 };
+        self.frame = old_id;
+        (new_id, old_id)
     }
 
     fn scroll(&mut self, delta: i32) -> bool {
@@ -1364,7 +1358,6 @@ impl AppState {
             return;
         }
         let query = self.search_query.to_lowercase();
-        let theme = default_theme();
         let content_width = self.vp_width - 2 * self.margin_left;
         let mut match_idx = 0usize;
 
@@ -1376,7 +1369,7 @@ impl AppState {
             self.search_matches.push(pos_idx);
 
             let highlights = compute_block_highlights(
-                block, block_y, &query, fonts, &theme,
+                block, block_y, &query, fonts, &self.theme,
                 content_width, self.margin_left, match_idx,
                 &self.headings, bi,
             );
@@ -1497,27 +1490,22 @@ fn compute_block_highlights(
                 y += line_height;
             }
         }
-        Block::Heading { level, spans } => {
-            let (size, _) = heading_style(level, theme);
-            let scale = PxScale::from(size);
-            // Find the heading's number prefix
-            let hi = headings.iter().position(|h| h.block_index == block_index);
-            let number = hi.map(|i| headings[i].number.as_str()).unwrap_or("");
-            let plain = spans_to_plain(spans);
-            let numbered_text = format!("{} {}", number, plain);
-            let lines = wrap_spans(
-                &[Span { text: numbered_text, style: SpanStyle::Bold }],
-                fonts, scale, content_width,
-            );
-            let line_height = (size * 1.3) as u32;
-            let mut y = block_y;
-            for line in &lines {
-                let line_plain = spans_to_plain(line);
-                highlights.extend(find_highlights_in_text(
-                    &line_plain, query, &fonts.bold, scale, line_height,
-                    margin_left, y, match_idx,
-                ));
-                y += line_height;
+        Block::Heading { level: _, spans } => {
+            let hi = headings.iter().find(|h| h.block_index == block_index);
+            if let Some(heading) = hi {
+                let (lines, size, line_height) = wrap_heading_text(
+                    heading, spans, fonts, theme, content_width,
+                );
+                let scale = PxScale::from(size);
+                let mut y = block_y;
+                for line in &lines {
+                    let line_plain = spans_to_plain(line);
+                    highlights.extend(find_highlights_in_text(
+                        &line_plain, query, &fonts.bold, scale, line_height,
+                        margin_left, y, match_idx,
+                    ));
+                    y += line_height;
+                }
             }
         }
         Block::CodeBlock { text } => {
@@ -1528,12 +1516,8 @@ fn compute_block_highlights(
             let line_height = (theme.body_size * 1.4) as u32;
             let x_start = margin_left + BLOCK_INDENT + pad;
             let mut y = block_y + pad;
-            for source_line in text.lines() {
-                let wrapped = wrap_spans(
-                    &[Span { text: source_line.to_string(), style: SpanStyle::Code }],
-                    fonts, scale, inner_width,
-                );
-                for line in &wrapped {
+            for wrapped in &wrap_code_lines(text, fonts, scale, inner_width) {
+                for line in wrapped {
                     let plain = spans_to_plain(line);
                     highlights.extend(find_highlights_in_text(
                         &plain, query, &fonts.mono, scale, line_height,
@@ -1569,22 +1553,8 @@ fn render_help_overlay(vp_width: u32, vp_height: u32, fonts: &Fonts) -> RgbImage
     );
     y += 50;
 
-    let bindings = [
-        ("Up / Down", "Navigate between headings"),
-        ("Left / Right / Tab", "Toggle fold open/close"),
-        ("Space", "Scroll down"),
-        ("Shift+Space", "Scroll up"),
-        ("j / k", "Small scroll steps"),
-        ("PgUp / PgDn", "Half-page scroll"),
-        ("Home / End", "Jump to top/bottom"),
-        ("/", "Search text"),
-        ("n / N", "Next/previous search match"),
-        ("h", "Show this help"),
-        ("q / Esc", "Quit"),
-    ];
-
     let indent_x = x + BLOCK_INDENT as i32;
-    for (key, desc) in &bindings {
+    for &(key, desc) in KEYBINDINGS {
         draw_text_mut(
             &mut img,
             Rgb([230, 180, 80]),
@@ -1677,17 +1647,9 @@ fn main() -> io::Result<()> {
         eprintln!("using the Kitty graphics protocol.");
         eprintln!();
         eprintln!("Keybindings:");
-        eprintln!("  Up/Down        Navigate between headings");
-        eprintln!("  Left/Right/Tab Toggle fold open/close");
-        eprintln!("  Space          Scroll down");
-        eprintln!("  Shift+Space    Scroll up");
-        eprintln!("  j/k            Small scroll steps");
-        eprintln!("  PgUp/PgDn      Half-page scroll");
-        eprintln!("  Home/End       Jump to top/bottom");
-        eprintln!("  /              Search text");
-        eprintln!("  n/N            Next/previous search match");
-        eprintln!("  h              Show help overlay");
-        eprintln!("  q/Esc          Quit");
+        for &(key, desc) in KEYBINDINGS {
+            eprintln!("  {:<20} {}", key, desc);
+        }
         std::process::exit(if args.len() < 2 { 1 } else { 0 });
     }
 
@@ -1780,9 +1742,7 @@ fn main() -> io::Result<()> {
                         let help_img = render_help_overlay(vp_width, vp_height, &fonts);
                         let mut out = BufWriter::new(stdout.lock());
                         let raw = help_img.as_raw();
-                        let new_id = state.frame;
-                        let old_id = if state.frame == 1 { 2 } else { 1 };
-                        state.frame = old_id;
+                        let (new_id, old_id) = state.next_frame();
                         kitty_display_raw(&mut out, raw, vp_width, vp_height, new_id, old_id)?;
                         // Wait for any key to dismiss
                         loop {
@@ -1820,11 +1780,11 @@ fn main() -> io::Result<()> {
                     | (KeyCode::Right, KeyModifiers::NONE)
                     | (KeyCode::Tab, _) => state.toggle_fold(&fonts),
 
-                    // Space: scroll down, Shift+Space (any modifier): scroll up
+                    // Space: scroll down, Ctrl+Space: scroll up
                     (KeyCode::Char(' '), KeyModifiers::NONE) => {
                         state.scroll(SCROLL_STEP as i32)
                     }
-                    (KeyCode::Char(' '), _) => state.scroll(-(SCROLL_STEP as i32)),
+                    (KeyCode::Char(' '), KeyModifiers::CONTROL) => state.scroll(-(SCROLL_STEP as i32)),
 
                     // j/k: small scroll steps
                     (KeyCode::Char('j'), _) => state.scroll(SCROLL_STEP as i32),
