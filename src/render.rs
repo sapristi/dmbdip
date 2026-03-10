@@ -11,6 +11,96 @@ use crate::text::{draw_spans, spans_to_plain, wrap_spans};
 use crate::theme::Theme;
 use crate::types::{Block, HeadingInfo, Span, SpanStyle};
 
+pub(crate) fn render_preview(
+    blocks: &[Block],
+    headings: &[HeadingInfo],
+    width: u32,
+    max_height: u32,
+    fonts: &Fonts,
+) -> RgbImage {
+    let theme = crate::theme::default_theme();
+    let content_width = (width - MARGIN_LEFT - MARGIN_RIGHT).min(MAX_CONTENT_WIDTH);
+    let margin_left = (width - content_width) / 2;
+
+    let mut img = RgbImage::from_pixel(width, max_height, theme.bg);
+    let mut y: u32 = PARAGRAPH_GAP;
+    let mut heading_idx: usize = 0;
+
+    for (_bi, block) in blocks.iter().enumerate() {
+        if y >= max_height {
+            break;
+        }
+
+        match block {
+            Block::Metadata { entries } => {
+                y = render_metadata(&mut img, entries, fonts, &theme, y, margin_left + BLOCK_INDENT);
+                y += PARAGRAPH_GAP * 2;
+            }
+            Block::Heading { level, spans } => {
+                if matches!(level, HeadingLevel::H1) {
+                    y += H1_EXTRA_MARGIN;
+                }
+
+                let hi = heading_idx;
+                heading_idx += 1;
+                if hi >= headings.len() {
+                    continue;
+                }
+
+                let (lines, size, line_height) = wrap_heading_text(
+                    &headings[hi], spans, fonts, &theme, content_width,
+                );
+                let (_, color) = heading_style(level, &theme);
+                let scale = PxScale::from(size);
+
+                for line in &lines {
+                    if y >= max_height {
+                        break;
+                    }
+                    for span in line {
+                        draw_text_mut(
+                            &mut img,
+                            color,
+                            margin_left as i32,
+                            y as i32,
+                            scale,
+                            &fonts.bold,
+                            &span.text,
+                        );
+                    }
+                    y += line_height;
+                }
+                y += PARAGRAPH_GAP;
+            }
+            Block::Paragraph { spans } => {
+                let scale = PxScale::from(theme.body_size);
+                let indented_width = content_width - BLOCK_INDENT;
+                let lines = wrap_spans(spans, fonts, scale, indented_width);
+                let line_height = (theme.body_size * 1.4) as u32;
+
+                for line in &lines {
+                    if y >= max_height {
+                        break;
+                    }
+                    draw_spans(&mut img, line, margin_left + BLOCK_INDENT, y, scale, fonts, &theme);
+                    y += line_height;
+                }
+                y += PARAGRAPH_GAP;
+            }
+            Block::CodeBlock { text } => {
+                y = render_code_block(&mut img, text, fonts, &theme, y, content_width - BLOCK_INDENT, margin_left + BLOCK_INDENT);
+                y += PARAGRAPH_GAP;
+            }
+            Block::Table { headers, rows } => {
+                y = render_table(&mut img, headers, rows, fonts, &theme, y, content_width - BLOCK_INDENT, margin_left + BLOCK_INDENT);
+                y += PARAGRAPH_GAP * 2;
+            }
+        }
+    }
+
+    img
+}
+
 pub(crate) fn render_markdown(
     blocks: &[Block],
     headings: &mut [HeadingInfo],
@@ -490,6 +580,22 @@ mod tests {
             "folded ({}) should be shorter than open ({})",
             img_folded.height(), img_open.height(),
         );
+    }
+
+    #[test]
+    fn render_preview_produces_valid_image() {
+        let fonts = test_fonts();
+        let blocks = parse_markdown(SAMPLE_MD);
+        let headings = build_headings(&blocks);
+        let img = render_preview(&blocks, &headings, 800, 600, &fonts);
+
+        assert_eq!(img.width(), 800);
+        assert_eq!(img.height(), 600);
+        // Check it's not entirely blank (background color)
+        let theme = crate::theme::default_theme();
+        let bg_pixel = theme.bg;
+        let has_content = img.pixels().any(|p| *p != bg_pixel);
+        assert!(has_content, "preview image should not be entirely blank");
     }
 
     #[test]

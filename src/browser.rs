@@ -3,13 +3,17 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{self, ClearType},
 };
+use image::RgbImage;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use crate::constants::SCROLL_STEP;
 use crate::fonts::Fonts;
+use crate::headings::build_headings;
 use crate::kitty::display_viewport;
 use crate::overlay::{render_help_overlay, render_search_bar};
+use crate::parsing::parse_markdown;
+use crate::render::render_preview;
 use crate::state::AppState;
 
 #[derive(Clone, Debug)]
@@ -48,12 +52,47 @@ fn scan_directory(dir: &Path) -> Vec<BrowserEntry> {
     result
 }
 
+struct PreviewCache {
+    entries: Vec<(PathBuf, RgbImage)>,
+    capacity: usize,
+}
+
+impl PreviewCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            capacity,
+        }
+    }
+
+    fn get(&self, path: &Path) -> Option<&RgbImage> {
+        self.entries
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, img)| img)
+    }
+
+    fn insert(&mut self, path: PathBuf, img: RgbImage) {
+        self.entries.retain(|(p, _)| p != &path);
+        self.entries.insert(0, (path, img));
+        if self.entries.len() > self.capacity {
+            self.entries.pop();
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 struct BrowserState {
     current_dir: PathBuf,
     entries: Vec<BrowserEntry>,
     cursor: usize,
     doc_state: Option<AppState>,
     doc_mode: bool,
+    preview_cache: PreviewCache,
+    preview_frame: u32,
 }
 
 const BROWSER_LEFT_COLS: u16 = 35;
@@ -141,6 +180,52 @@ fn browser_clear_preview(out: &mut impl Write) -> io::Result<()> {
     execute!(out, terminal::Clear(ClearType::All))
 }
 
+fn show_preview(
+    out: &mut impl Write,
+    state: &mut BrowserState,
+    fonts: &Fonts,
+    preview_width: u32,
+    vp_height: u32,
+) -> io::Result<()> {
+    match state.entries.get(state.cursor) {
+        Some(BrowserEntry::File(name)) if name.ends_with(".md") || name.ends_with(".MD") => {
+            let file_path = state.current_dir.join(name);
+            if state.preview_cache.get(&file_path).is_none() {
+                if let Ok(source) = std::fs::read_to_string(&file_path) {
+                    let blocks = parse_markdown(&source);
+                    let headings = build_headings(&blocks);
+                    let img = render_preview(&blocks, &headings, preview_width, vp_height, fonts);
+                    state.preview_cache.insert(file_path.clone(), img);
+                }
+            }
+            if let Some(img) = state.preview_cache.get(&file_path) {
+                display_viewport(
+                    out,
+                    img,
+                    0,
+                    preview_width,
+                    vp_height,
+                    &mut state.preview_frame,
+                    Some(BROWSER_LEFT_COLS + 1),
+                    None,
+                    None,
+                    &[],
+                    0,
+                )?;
+            }
+        }
+        _ => {
+            // Only delete kitty images, don't clear the terminal text
+            write!(
+                out,
+                "\x1b_Ga=d,d=I,i=1,q=2\x1b\\\x1b_Ga=d,d=I,i=2,q=2\x1b\\"
+            )?;
+            out.flush()?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u32) -> io::Result<()> {
     let (_term_cols, term_rows) = terminal::size()?;
     let mut state = BrowserState {
@@ -149,10 +234,13 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
         cursor: 0,
         doc_state: None,
         doc_mode: false,
+        preview_cache: PreviewCache::new(8),
+        preview_frame: 1,
     };
 
     let stdout = io::stdout();
     terminal::enable_raw_mode()?;
+    let preview_width = vp_width.saturating_sub(BROWSER_LEFT_COLS as u32 * 8);
     {
         let mut out = BufWriter::new(stdout.lock());
         execute!(
@@ -162,9 +250,8 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
             terminal::Clear(ClearType::All)
         )?;
         draw_file_list(&mut out, &state, term_rows)?;
+        show_preview(&mut out, &mut state, fonts, preview_width, vp_height)?;
     }
-
-    let preview_width = vp_width.saturating_sub(BROWSER_LEFT_COLS as u32 * 8);
 
     loop {
         if let Event::Key(KeyEvent {
@@ -346,6 +433,7 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                                 state.current_dir = new_dir.canonicalize().unwrap_or(new_dir);
                                 state.cursor = 0;
                                 state.doc_state = None;
+                                state.preview_cache.clear();
                                 let mut out = BufWriter::new(stdout.lock());
                                 browser_clear_preview(&mut out)?;
                             }
@@ -385,6 +473,7 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                             state.current_dir = parent.canonicalize().unwrap_or(parent);
                             state.cursor = 0;
                             state.doc_state = None;
+                            state.preview_cache.clear();
                             let mut out = BufWriter::new(stdout.lock());
                             browser_clear_preview(&mut out)?;
                         }
@@ -425,6 +514,7 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                 if needs_redraw {
                     let mut out = BufWriter::new(stdout.lock());
                     draw_file_list(&mut out, &state, term_rows)?;
+                    show_preview(&mut out, &mut state, fonts, preview_width, vp_height)?;
                 }
             }
         }
