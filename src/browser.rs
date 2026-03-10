@@ -5,6 +5,7 @@ use crossterm::{
 };
 use image::RgbImage;
 use std::io::{self, BufWriter, Write};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::constants::SCROLL_STEP;
@@ -85,14 +86,22 @@ impl PreviewCache {
     }
 }
 
+struct SavedPosition {
+    scroll_y: u32,
+    current_heading: Option<usize>,
+    folded: Vec<bool>,
+}
+
 struct BrowserState {
     current_dir: PathBuf,
     entries: Vec<BrowserEntry>,
     cursor: usize,
     doc_state: Option<AppState>,
     doc_mode: bool,
+    doc_path: Option<PathBuf>,
     preview_cache: PreviewCache,
     preview_frame: u32,
+    position_cache: HashMap<PathBuf, SavedPosition>,
 }
 
 const BROWSER_LEFT_COLS: u16 = 35;
@@ -234,8 +243,10 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
         cursor: 0,
         doc_state: None,
         doc_mode: false,
+        doc_path: None,
         preview_cache: PreviewCache::new(8),
         preview_frame: 1,
+        position_cache: HashMap::new(),
     };
 
     let stdout = io::stdout();
@@ -291,6 +302,13 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                         match (code, modifiers) {
                             (KeyCode::Char('q'), _) => break,
                             (KeyCode::Esc, _) => {
+                                if let (Some(ds), Some(path)) = (&state.doc_state, &state.doc_path) {
+                                    state.position_cache.insert(path.clone(), SavedPosition {
+                                        scroll_y: ds.scroll_y,
+                                        current_heading: ds.current_heading,
+                                        folded: ds.headings.iter().map(|h| h.folded).collect(),
+                                    });
+                                }
                                 state.doc_mode = false;
                                 let mut out = BufWriter::new(stdout.lock());
                                 browser_clear_preview(&mut out)?;
@@ -310,6 +328,13 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                             (KeyCode::Down, KeyModifiers::NONE) => ds.navigate_heading(1),
                             (KeyCode::Up, KeyModifiers::NONE) => ds.navigate_heading(-1),
                             (KeyCode::Left, KeyModifiers::NONE) => {
+                                if let (Some(ds), Some(path)) = (&state.doc_state, &state.doc_path) {
+                                    state.position_cache.insert(path.clone(), SavedPosition {
+                                        scroll_y: ds.scroll_y,
+                                        current_heading: ds.current_heading,
+                                        folded: ds.headings.iter().map(|h| h.folded).collect(),
+                                    });
+                                }
                                 state.doc_mode = false;
                                 let mut out = BufWriter::new(stdout.lock());
                                 browser_clear_preview(&mut out)?;
@@ -434,14 +459,25 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                                 state.cursor = 0;
                                 state.doc_state = None;
                                 state.preview_cache.clear();
+                                state.position_cache.clear();
                                 let mut out = BufWriter::new(stdout.lock());
                                 browser_clear_preview(&mut out)?;
                             }
                             Some(BrowserEntry::File(name)) => {
                                 let file_path = state.current_dir.join(&name);
                                 if let Ok(source) = std::fs::read_to_string(&file_path) {
-                                    let ds =
+                                    let mut ds =
                                         AppState::new(&source, fonts, preview_width, vp_height);
+                                    if let Some(saved) = state.position_cache.get(&file_path) {
+                                        ds.scroll_y = saved.scroll_y;
+                                        ds.current_heading = saved.current_heading;
+                                        for (i, &folded) in saved.folded.iter().enumerate() {
+                                            if i < ds.headings.len() {
+                                                ds.headings[i].folded = folded;
+                                            }
+                                        }
+                                        ds.rerender(fonts);
+                                    }
                                     let mut out = BufWriter::new(stdout.lock());
                                     let ci = ds.cursor_info();
                                     let mut frame = ds.frame;
@@ -460,6 +496,7 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                                     )?;
                                     state.doc_state = Some(AppState { frame, ..ds });
                                     state.doc_mode = true;
+                                    state.doc_path = Some(file_path);
                                 }
                             }
                             None => {}
@@ -474,6 +511,7 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                             state.cursor = 0;
                             state.doc_state = None;
                             state.preview_cache.clear();
+                            state.position_cache.clear();
                             let mut out = BufWriter::new(stdout.lock());
                             browser_clear_preview(&mut out)?;
                         }
@@ -485,8 +523,18 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                         {
                             let file_path = state.current_dir.join(&name);
                             if let Ok(source) = std::fs::read_to_string(&file_path) {
-                                let ds =
+                                let mut ds =
                                     AppState::new(&source, fonts, preview_width, vp_height);
+                                if let Some(saved) = state.position_cache.get(&file_path) {
+                                    ds.scroll_y = saved.scroll_y;
+                                    ds.current_heading = saved.current_heading;
+                                    for (i, &folded) in saved.folded.iter().enumerate() {
+                                        if i < ds.headings.len() {
+                                            ds.headings[i].folded = folded;
+                                        }
+                                    }
+                                    ds.rerender(fonts);
+                                }
                                 let mut out = BufWriter::new(stdout.lock());
                                 let ci = ds.cursor_info();
                                 let mut frame = ds.frame;
@@ -505,6 +553,7 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                                 )?;
                                 state.doc_state = Some(AppState { frame, ..ds });
                                 state.doc_mode = true;
+                                state.doc_path = Some(file_path);
                             }
                         }
                         true
