@@ -655,21 +655,22 @@ fn render_markdown(
                 headings[hi].y_pos = y;
                 headings[hi].heading_height = heading_total_h;
 
-                // Draw cursor indicator if this is the current heading
-                if current_heading == Some(hi) {
-                    draw_filled_rect_mut(
-                        &mut img,
-                        Rect::at((margin_left - CURSOR_MARGIN - CURSOR_WIDTH) as i32, y as i32)
-                            .of_size(CURSOR_WIDTH, heading_total_h),
-                        theme.cursor_color,
-                    );
-                }
-
                 // Draw fold arrow at smaller size to the left of the heading
                 let fold_char = if headings[hi].folded { "▶" } else { "▼" };
                 let arrow_scale = PxScale::from(size * 0.5);
                 let arrow_w = text_size(arrow_scale, &fonts.bold, fold_char).0;
                 let arrow_x = margin_left as i32 - arrow_w as i32 - 4;
+
+                // Draw cursor indicator further left, past the arrow
+                if current_heading == Some(hi) {
+                    let cursor_x = arrow_x - CURSOR_MARGIN as i32 - CURSOR_WIDTH as i32;
+                    draw_filled_rect_mut(
+                        &mut img,
+                        Rect::at(cursor_x, y as i32)
+                            .of_size(CURSOR_WIDTH, heading_total_h),
+                        theme.cursor_color,
+                    );
+                }
                 let arrow_y_offset = ((size - size * 0.5) * 0.5) as i32;
                 draw_text_mut(
                     &mut img,
