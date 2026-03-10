@@ -636,9 +636,7 @@ fn render_markdown(
                 let number = &headings[hi].number;
                 let plain = spans_to_plain(spans);
 
-                // Add fold indicator for headings that have content
-                let fold_prefix = if headings[hi].folded { "▶ " } else { "▼ " };
-                let numbered_text = format!("{}{} {}", fold_prefix, number, plain);
+                let numbered_text = format!("{} {}", number, plain);
 
                 let lines = wrap_spans(
                     &[Span {
@@ -666,6 +664,22 @@ fn render_markdown(
                         theme.cursor_color,
                     );
                 }
+
+                // Draw fold arrow at smaller size to the left of the heading
+                let fold_char = if headings[hi].folded { "▶" } else { "▼" };
+                let arrow_scale = PxScale::from(size * 0.5);
+                let arrow_w = text_size(arrow_scale, &fonts.bold, fold_char).0;
+                let arrow_x = margin_left as i32 - arrow_w as i32 - 4;
+                let arrow_y_offset = ((size - size * 0.5) * 0.5) as i32;
+                draw_text_mut(
+                    &mut img,
+                    color,
+                    arrow_x,
+                    y as i32 + arrow_y_offset,
+                    arrow_scale,
+                    &fonts.bold,
+                    fold_char,
+                );
 
                 for line in &lines {
                     for span in line {
@@ -746,8 +760,7 @@ fn compute_total_height(
                 heading_idx += 1;
                 let number = &headings[hi].number;
                 let plain = spans_to_plain(spans);
-                let fold_prefix = if headings[hi].folded { "▶ " } else { "▼ " };
-                let numbered_text = format!("{}{} {}", fold_prefix, number, plain);
+                let numbered_text = format!("{} {}", number, plain);
                 let lines = wrap_spans(
                     &[Span {
                         text: numbered_text,
