@@ -585,7 +585,7 @@ fn render_markdown(
     current_heading: Option<usize>,
     width: u32,
     fonts: &Fonts,
-) -> RgbImage {
+) -> (RgbImage, Vec<(usize, u32)>) {
     let theme = default_theme();
     let content_width = width - MARGIN_LEFT - MARGIN_RIGHT;
 
@@ -594,6 +594,7 @@ fn render_markdown(
     let mut img = RgbImage::from_pixel(width, total_height.max(1), theme.bg);
     let mut y: u32 = PARAGRAPH_GAP;
     let mut heading_idx: usize = 0;
+    let mut block_positions: Vec<(usize, u32)> = Vec::new();
 
     for (bi, block) in blocks.iter().enumerate() {
         if is_block_folded(bi, headings) {
@@ -603,6 +604,8 @@ fn render_markdown(
             }
             continue;
         }
+
+        block_positions.push((bi, y));
 
         match block {
             Block::Metadata { entries } => {
@@ -688,7 +691,7 @@ fn render_markdown(
         }
     }
 
-    img
+    (img, block_positions)
 }
 
 fn heading_style(level: &HeadingLevel, theme: &Theme) -> (f32, Rgb<u8>) {
@@ -1060,6 +1063,7 @@ fn display_viewport(
     vp_width: u32,
     vp_height: u32,
     frame: &mut u32,
+    overlay: Option<&RgbImage>,
 ) -> io::Result<()> {
     let src_w = vp_width.min(img.width());
     let src_h = vp_height.min(img.height().saturating_sub(scroll_y));
@@ -1071,6 +1075,24 @@ fn display_viewport(
     for row in 0..src_h as usize {
         let offset = row_start + row * stride;
         viewport_data.extend_from_slice(&raw[offset..offset + src_w as usize * 3]);
+    }
+
+    // Draw overlay bar at bottom if present
+    if let Some(overlay_img) = overlay {
+        let overlay_h = overlay_img.height() as usize;
+        let overlay_start = (src_h as usize).saturating_sub(overlay_h);
+        let overlay_raw = overlay_img.as_raw();
+        let copy_w = src_w.min(overlay_img.width()) as usize * 3;
+        for row in 0..overlay_h.min(src_h as usize) {
+            let dst_offset = (overlay_start + row) * src_w as usize * 3;
+            let src_offset = row * overlay_img.width() as usize * 3;
+            if dst_offset + copy_w <= viewport_data.len()
+                && src_offset + copy_w <= overlay_raw.len()
+            {
+                viewport_data[dst_offset..dst_offset + copy_w]
+                    .copy_from_slice(&overlay_raw[src_offset..src_offset + copy_w]);
+            }
+        }
     }
 
     let new_id = *frame;
@@ -1103,6 +1125,11 @@ struct AppState {
     vp_height: u32,
     frame: u32,
     img: RgbImage,
+    block_y_positions: Vec<(usize, u32)>, // (block_index, y_pos)
+    search_mode: bool,
+    search_query: String,
+    search_matches: Vec<usize>, // indices into block_y_positions
+    search_current: usize,
 }
 
 impl AppState {
@@ -1120,19 +1147,26 @@ impl AppState {
             vp_height,
             frame: 1,
             img: RgbImage::new(1, 1), // placeholder
+            block_y_positions: Vec::new(),
+            search_mode: false,
+            search_query: String::new(),
+            search_matches: Vec::new(),
+            search_current: 0,
         };
         state.rerender(fonts);
         state
     }
 
     fn rerender(&mut self, fonts: &Fonts) {
-        self.img = render_markdown(
+        let (img, positions) = render_markdown(
             &self.blocks,
             &mut self.headings,
             self.current_heading,
             self.vp_width,
             fonts,
         );
+        self.img = img;
+        self.block_y_positions = positions;
         // Clamp scroll
         let max_scroll = self.max_scroll();
         if self.scroll_y > max_scroll {
@@ -1222,13 +1256,210 @@ impl AppState {
             false
         }
     }
+
+    fn execute_search(&mut self) {
+        self.search_matches.clear();
+        self.search_current = 0;
+        if self.search_query.is_empty() {
+            return;
+        }
+        let query = self.search_query.to_lowercase();
+        for (pos_idx, &(bi, _y)) in self.block_y_positions.iter().enumerate() {
+            if block_contains_text(&self.blocks[bi], &query) {
+                self.search_matches.push(pos_idx);
+            }
+        }
+        // Scroll to first match
+        if !self.search_matches.is_empty() {
+            let pos_idx = self.search_matches[0];
+            let (_bi, y) = self.block_y_positions[pos_idx];
+            self.scroll_y = y.saturating_sub(PARAGRAPH_GAP).min(self.max_scroll());
+        }
+    }
+
+    fn navigate_search(&mut self, forward: bool) -> bool {
+        if self.search_matches.is_empty() {
+            return false;
+        }
+        if forward {
+            self.search_current = (self.search_current + 1) % self.search_matches.len();
+        } else {
+            self.search_current = if self.search_current == 0 {
+                self.search_matches.len() - 1
+            } else {
+                self.search_current - 1
+            };
+        }
+        let pos_idx = self.search_matches[self.search_current];
+        let (_bi, y) = self.block_y_positions[pos_idx];
+        let old_scroll = self.scroll_y;
+        self.scroll_y = y.saturating_sub(PARAGRAPH_GAP).min(self.max_scroll());
+        self.scroll_y != old_scroll
+    }
+}
+
+fn block_contains_text(block: &Block, query: &str) -> bool {
+    match block {
+        Block::Heading { spans, .. } | Block::Paragraph { spans } => {
+            spans_to_plain(spans).to_lowercase().contains(query)
+        }
+        Block::CodeBlock { text } => text.to_lowercase().contains(query),
+        Block::Table { headers, rows } => {
+            headers
+                .iter()
+                .any(|h| spans_to_plain(h).to_lowercase().contains(query))
+                || rows.iter().any(|row| {
+                    row.iter()
+                        .any(|cell| spans_to_plain(cell).to_lowercase().contains(query))
+                })
+        }
+        Block::Metadata { entries } => entries.iter().any(|(k, v)| {
+            k.to_lowercase().contains(query) || v.to_lowercase().contains(query)
+        }),
+    }
+}
+
+fn render_help_overlay(vp_width: u32, vp_height: u32, fonts: &Fonts) -> RgbImage {
+    let mut img = RgbImage::from_pixel(vp_width, vp_height, Rgb([30, 30, 40]));
+    let scale = PxScale::from(20.0);
+    let title_scale = PxScale::from(28.0);
+    let line_height = 32i32;
+    let x = 40i32;
+    let mut y = 40i32;
+
+    draw_text_mut(
+        &mut img,
+        Rgb([100, 160, 255]),
+        x,
+        y,
+        title_scale,
+        &fonts.bold,
+        "Keybindings",
+    );
+    y += 50;
+
+    let bindings = [
+        ("Up / Down", "Navigate between headings"),
+        ("Left / Right / Tab", "Toggle fold open/close"),
+        ("Space", "Scroll down"),
+        ("Shift+Space", "Scroll up"),
+        ("j / k", "Small scroll steps"),
+        ("PgUp / PgDn", "Half-page scroll"),
+        ("Home / End", "Jump to top/bottom"),
+        ("/", "Search text"),
+        ("n / N", "Next/previous search match"),
+        ("h", "Show this help"),
+        ("q / Esc", "Quit"),
+    ];
+
+    for (key, desc) in &bindings {
+        draw_text_mut(
+            &mut img,
+            Rgb([230, 180, 80]),
+            x,
+            y,
+            scale,
+            &fonts.bold,
+            key,
+        );
+        draw_text_mut(
+            &mut img,
+            Rgb([220, 220, 220]),
+            x + 220,
+            y,
+            scale,
+            &fonts.regular,
+            desc,
+        );
+        y += line_height;
+    }
+
+    y += 20;
+    draw_text_mut(
+        &mut img,
+        Rgb([140, 140, 160]),
+        x,
+        y,
+        scale,
+        &fonts.regular,
+        "Press any key to dismiss",
+    );
+
+    img
+}
+
+fn render_search_bar(
+    query: &str,
+    match_info: Option<(usize, usize)>,
+    width: u32,
+    fonts: &Fonts,
+) -> RgbImage {
+    let bar_height = 30u32;
+    let scale = PxScale::from(18.0);
+    let mut bar = RgbImage::from_pixel(width, bar_height, Rgb([50, 50, 65]));
+
+    // Draw top border
+    for x in 0..width {
+        bar.put_pixel(x, 0, Rgb([80, 80, 100]));
+    }
+
+    let display = format!("/{}", query);
+    draw_text_mut(
+        &mut bar,
+        Rgb([220, 220, 220]),
+        10,
+        5,
+        scale,
+        &fonts.regular,
+        &display,
+    );
+
+    if let Some((current, total)) = match_info {
+        let info = format!("{}/{}", current, total);
+        let (tw, _) = text_size(scale, &fonts.regular, &info);
+        draw_text_mut(
+            &mut bar,
+            Rgb([180, 180, 180]),
+            (width - tw - 10) as i32,
+            5,
+            scale,
+            &fonts.regular,
+            &info,
+        );
+    }
+
+    bar
 }
 
 // --- Main ---
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let file_path = args.get(1).expect("Usage: mdbdp <markdown-file>");
+
+    if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
+        eprintln!("mdbdp - Display Markdown But Do it Pretty");
+        eprintln!();
+        eprintln!("Usage: mdbdp <markdown-file>");
+        eprintln!();
+        eprintln!("Renders a markdown file as an image and displays it in the terminal");
+        eprintln!("using the Kitty graphics protocol.");
+        eprintln!();
+        eprintln!("Keybindings:");
+        eprintln!("  Up/Down        Navigate between headings");
+        eprintln!("  Left/Right/Tab Toggle fold open/close");
+        eprintln!("  Space          Scroll down");
+        eprintln!("  Shift+Space    Scroll up");
+        eprintln!("  j/k            Small scroll steps");
+        eprintln!("  PgUp/PgDn      Half-page scroll");
+        eprintln!("  Home/End       Jump to top/bottom");
+        eprintln!("  /              Search text");
+        eprintln!("  n/N            Next/previous search match");
+        eprintln!("  h              Show help overlay");
+        eprintln!("  q/Esc          Quit");
+        std::process::exit(if args.len() < 2 { 1 } else { 0 });
+    }
+
+    let file_path = &args[1];
 
     let source = std::fs::read_to_string(file_path)
         .unwrap_or_else(|e| panic!("Cannot read {}: {}", file_path, e));
@@ -1265,6 +1496,7 @@ fn main() -> io::Result<()> {
             vp_width,
             vp_height,
             &mut state.frame,
+            None,
         )?;
     }
 
@@ -1276,52 +1508,129 @@ fn main() -> io::Result<()> {
             ..
         }) = event::read()?
         {
-            let needs_redraw = match (code, modifiers) {
-                (KeyCode::Char('q'), _)
-                | (KeyCode::Esc, _)
-                | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
-
-                // Up/Down: navigate between headings
-                (KeyCode::Down, KeyModifiers::NONE) => state.navigate_heading(1, &fonts),
-                (KeyCode::Up, KeyModifiers::NONE) => state.navigate_heading(-1, &fonts),
-
-                // Left/Right: toggle fold
-                (KeyCode::Left, KeyModifiers::NONE) | (KeyCode::Right, KeyModifiers::NONE) | (KeyCode::Tab, _) => {
-                    state.toggle_fold(&fonts)
+            let needs_redraw = if state.search_mode {
+                // Search input mode
+                match (code, modifiers) {
+                    (KeyCode::Esc, _) => {
+                        state.search_mode = false;
+                        state.search_query.clear();
+                        state.search_matches.clear();
+                        true
+                    }
+                    (KeyCode::Enter, _) => {
+                        state.search_mode = false;
+                        state.execute_search();
+                        true
+                    }
+                    (KeyCode::Backspace, _) => {
+                        state.search_query.pop();
+                        true
+                    }
+                    (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                        state.search_query.push(c);
+                        true
+                    }
+                    _ => false,
                 }
+            } else {
+                match (code, modifiers) {
+                    (KeyCode::Char('q'), _)
+                    | (KeyCode::Esc, _)
+                    | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
 
-                // Space: scroll down, Shift+Space (any modifier): scroll up
-                (KeyCode::Char(' '), KeyModifiers::NONE) => {
-                    state.scroll(SCROLL_STEP as i32)
+                    // Help overlay
+                    (KeyCode::Char('h'), KeyModifiers::NONE) => {
+                        let help_img = render_help_overlay(vp_width, vp_height, &fonts);
+                        let mut out = BufWriter::new(stdout.lock());
+                        let raw = help_img.as_raw();
+                        let new_id = state.frame;
+                        let old_id = if state.frame == 1 { 2 } else { 1 };
+                        state.frame = old_id;
+                        kitty_display_raw(&mut out, raw, vp_width, vp_height, new_id, old_id)?;
+                        // Wait for any key to dismiss
+                        loop {
+                            if let Event::Key(KeyEvent {
+                                kind: KeyEventKind::Press,
+                                ..
+                            }) = event::read()?
+                            {
+                                break;
+                            }
+                        }
+                        true
+                    }
+
+                    // Enter search mode
+                    (KeyCode::Char('/'), KeyModifiers::NONE) => {
+                        state.search_mode = true;
+                        state.search_query.clear();
+                        state.search_matches.clear();
+                        state.search_current = 0;
+                        true
+                    }
+
+                    // Search navigation
+                    (KeyCode::Char('n'), KeyModifiers::NONE) => state.navigate_search(true),
+                    (KeyCode::Char('N'), KeyModifiers::SHIFT) => state.navigate_search(false),
+
+                    // Up/Down: navigate between headings
+                    (KeyCode::Down, KeyModifiers::NONE) => state.navigate_heading(1, &fonts),
+                    (KeyCode::Up, KeyModifiers::NONE) => state.navigate_heading(-1, &fonts),
+
+                    // Left/Right: toggle fold
+                    (KeyCode::Left, KeyModifiers::NONE)
+                    | (KeyCode::Right, KeyModifiers::NONE)
+                    | (KeyCode::Tab, _) => state.toggle_fold(&fonts),
+
+                    // Space: scroll down, Shift+Space (any modifier): scroll up
+                    (KeyCode::Char(' '), KeyModifiers::NONE) => {
+                        state.scroll(SCROLL_STEP as i32)
+                    }
+                    (KeyCode::Char(' '), _) => state.scroll(-(SCROLL_STEP as i32)),
+
+                    // j/k: small scroll steps
+                    (KeyCode::Char('j'), _) => state.scroll(SCROLL_STEP as i32),
+                    (KeyCode::Char('k'), _) => state.scroll(-(SCROLL_STEP as i32)),
+
+                    // PgDn/PgUp
+                    (KeyCode::PageDown, _) => state.scroll(vp_height as i32 / 2),
+                    (KeyCode::PageUp, _) => state.scroll(-(vp_height as i32 / 2)),
+
+                    (KeyCode::Home, _) => {
+                        let changed = state.scroll_y != 0;
+                        state.scroll_y = 0;
+                        changed
+                    }
+                    (KeyCode::End, _) => {
+                        let max = state.max_scroll();
+                        let changed = state.scroll_y != max;
+                        state.scroll_y = max;
+                        changed
+                    }
+
+                    _ => false,
                 }
-                (KeyCode::Char(' '), _) => {
-                    state.scroll(-(SCROLL_STEP as i32))
-                }
-
-                // j/k: small scroll steps
-                (KeyCode::Char('j'), _) => state.scroll(SCROLL_STEP as i32),
-                (KeyCode::Char('k'), _) => state.scroll(-(SCROLL_STEP as i32)),
-
-                // PgDn/PgUp
-                (KeyCode::PageDown, _) => state.scroll(vp_height as i32 / 2),
-                (KeyCode::PageUp, _) => state.scroll(-(vp_height as i32 / 2)),
-
-                (KeyCode::Home, _) => {
-                    let changed = state.scroll_y != 0;
-                    state.scroll_y = 0;
-                    changed
-                }
-                (KeyCode::End, _) => {
-                    let max = state.max_scroll();
-                    let changed = state.scroll_y != max;
-                    state.scroll_y = max;
-                    changed
-                }
-
-                _ => false,
             };
 
             if needs_redraw {
+                let overlay = if state.search_mode {
+                    Some(render_search_bar(
+                        &state.search_query,
+                        None,
+                        vp_width,
+                        &fonts,
+                    ))
+                } else if !state.search_matches.is_empty() {
+                    Some(render_search_bar(
+                        &state.search_query,
+                        Some((state.search_current + 1, state.search_matches.len())),
+                        vp_width,
+                        &fonts,
+                    ))
+                } else {
+                    None
+                };
+
                 let mut out = BufWriter::new(stdout.lock());
                 display_viewport(
                     &mut out,
@@ -1330,6 +1639,7 @@ fn main() -> io::Result<()> {
                     vp_width,
                     vp_height,
                     &mut state.frame,
+                    overlay.as_ref(),
                 )?;
             }
         }
