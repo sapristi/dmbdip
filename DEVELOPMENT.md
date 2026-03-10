@@ -1,5 +1,22 @@
 # Development
 
+## Tech Stack
+
+- **Language:** Rust
+- **Terminal:** Kitty (graphics protocol, raw RGB f=24, double-buffered)
+- **Key crates:** `image`, `base64`, `crossterm`, `pulldown-cmark`, `ab_glyph`, `imageproc`
+- **Fonts:** DejaVu Sans (regular, bold, oblique) + DejaVu Sans Mono
+
+## Architecture
+
+- Parse markdown into `Vec<Block>` (Heading, Paragraph, CodeBlock, Table, Metadata)
+- Inline text uses `Vec<Span>` with styles: Normal, Bold, Italic, Code
+- `HeadingInfo` tracks each heading's position, number, fold state
+- `AppState` manages blocks, headings, cursor, scroll, fold, search state
+- Two-pass rendering: compute height, then draw to RgbImage (re-renders on fold/nav changes)
+- Kitty display: double-buffered with alternating image IDs, raw RGB, BufWriter
+- Alternate screen mode for proper key passthrough
+
 ## Workflow Rules
 
 - Commit changes each time a task is done
