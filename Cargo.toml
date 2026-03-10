@@ -2,6 +2,9 @@
 name = "dmbdip"
 version = "0.1.0"
 edition = "2024"
+description = "Display Markdown But Do it Pretty - renders markdown as images in the terminal using the Kitty graphics protocol"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/sapristi/dmbdip"
 
 [dependencies]
 image = "0.25"

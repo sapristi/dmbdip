@@ -1639,9 +1639,9 @@ fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
-        eprintln!("mdbdp - Display Markdown But Do it Pretty");
+        eprintln!("dmbdip - Display Markdown But Do it Pretty");
         eprintln!();
-        eprintln!("Usage: mdbdp <markdown-file>");
+        eprintln!("Usage: dmbdip <markdown-file>");
         eprintln!();
         eprintln!("Renders a markdown file as an image and displays it in the terminal");
         eprintln!("using the Kitty graphics protocol.");
