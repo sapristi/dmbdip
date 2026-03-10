@@ -13,6 +13,20 @@ mdbdp --help
 
 **Requirements:** Kitty terminal (or any terminal supporting the Kitty graphics protocol), DejaVu fonts installed.
 
+## Building
+
+Requires Rust (1.85+ for edition 2024). Install via [rustup](https://rustup.rs/).
+
+```
+cargo build --release
+```
+
+The binary will be at `target/release/mdbdp`. Copy it to a directory in your `$PATH`:
+
+```
+cp target/release/mdbdp ~/.local/bin/
+```
+
 ## Keybindings
 
 | Key | Action |
