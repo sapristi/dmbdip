@@ -595,10 +595,9 @@ fn draw_spans(
 fn render_markdown(
     blocks: &[Block],
     headings: &mut [HeadingInfo],
-    current_heading: Option<usize>,
     width: u32,
     fonts: &Fonts,
-) -> (RgbImage, Vec<(usize, u32)>) {
+) -> (RgbImage, Vec<(usize, u32)>, u32) {
     let theme = default_theme();
     let content_width = (width - MARGIN_LEFT - MARGIN_RIGHT).min(MAX_CONTENT_WIDTH);
     let margin_left = (width - content_width) / 2;
@@ -661,16 +660,6 @@ fn render_markdown(
                 let arrow_w = text_size(arrow_scale, &fonts.bold, fold_char).0;
                 let arrow_x = margin_left as i32 - arrow_w as i32 - 4;
 
-                // Draw cursor indicator further left, past the arrow
-                if current_heading == Some(hi) {
-                    let cursor_x = arrow_x - CURSOR_MARGIN as i32 - CURSOR_WIDTH as i32;
-                    draw_filled_rect_mut(
-                        &mut img,
-                        Rect::at(cursor_x, y as i32)
-                            .of_size(CURSOR_WIDTH, heading_total_h),
-                        theme.cursor_color,
-                    );
-                }
                 let arrow_y_offset = ((size - size * 0.5) * 0.5) as i32;
                 draw_text_mut(
                     &mut img,
@@ -720,7 +709,7 @@ fn render_markdown(
         }
     }
 
-    (img, block_positions)
+    (img, block_positions, margin_left)
 }
 
 fn heading_style(level: &HeadingLevel, theme: &Theme) -> (f32, Rgb<u8>) {
@@ -1086,6 +1075,7 @@ fn kitty_display_raw(
     w.flush()
 }
 
+/// cursor_info: Option<(x, y_in_image, height, color)>
 fn display_viewport(
     w: &mut impl Write,
     img: &RgbImage,
@@ -1094,17 +1084,38 @@ fn display_viewport(
     vp_height: u32,
     frame: &mut u32,
     overlay: Option<&RgbImage>,
+    cursor_info: Option<(u32, u32, u32, [u8; 3])>,
 ) -> io::Result<()> {
     let src_w = vp_width.min(img.width());
     let src_h = vp_height.min(img.height().saturating_sub(scroll_y));
-    let stride = img.width() as usize * 3;
+    let stride = src_w as usize * 3;
 
     let raw = img.as_raw();
-    let row_start = scroll_y as usize * stride;
+    let img_stride = img.width() as usize * 3;
+    let row_start = scroll_y as usize * img_stride;
     let mut viewport_data = Vec::with_capacity(src_w as usize * src_h as usize * 3);
     for row in 0..src_h as usize {
-        let offset = row_start + row * stride;
+        let offset = row_start + row * img_stride;
         viewport_data.extend_from_slice(&raw[offset..offset + src_w as usize * 3]);
+    }
+
+    // Draw cursor bar onto viewport data
+    if let Some((cx, cy_img, ch, color)) = cursor_info {
+        let vp_y_start = cy_img.saturating_sub(scroll_y) as usize;
+        let vp_y_end = ((cy_img + ch).saturating_sub(scroll_y) as usize).min(src_h as usize);
+        for row in vp_y_start..vp_y_end {
+            for px in 0..CURSOR_WIDTH as usize {
+                let x = cx as usize + px;
+                if x < src_w as usize {
+                    let offset = row * stride + x * 3;
+                    if offset + 2 < viewport_data.len() {
+                        viewport_data[offset] = color[0];
+                        viewport_data[offset + 1] = color[1];
+                        viewport_data[offset + 2] = color[2];
+                    }
+                }
+            }
+        }
     }
 
     // Draw overlay bar at bottom if present
@@ -1156,6 +1167,7 @@ struct AppState {
     frame: u32,
     img: RgbImage,
     block_y_positions: Vec<(usize, u32)>, // (block_index, y_pos)
+    margin_left: u32,
     search_mode: bool,
     search_query: String,
     search_matches: Vec<usize>, // indices into block_y_positions
@@ -1178,6 +1190,7 @@ impl AppState {
             frame: 1,
             img: RgbImage::new(1, 1), // placeholder
             block_y_positions: Vec::new(),
+            margin_left: 0,
             search_mode: false,
             search_query: String::new(),
             search_matches: Vec::new(),
@@ -1188,15 +1201,15 @@ impl AppState {
     }
 
     fn rerender(&mut self, fonts: &Fonts) {
-        let (img, positions) = render_markdown(
+        let (img, positions, margin_left) = render_markdown(
             &self.blocks,
             &mut self.headings,
-            self.current_heading,
             self.vp_width,
             fonts,
         );
         self.img = img;
         self.block_y_positions = positions;
+        self.margin_left = margin_left;
         // Clamp scroll
         let max_scroll = self.max_scroll();
         if self.scroll_y > max_scroll {
@@ -1208,7 +1221,7 @@ impl AppState {
         self.img.height().saturating_sub(self.vp_height)
     }
 
-    fn navigate_heading(&mut self, direction: i32, fonts: &Fonts) -> bool {
+    fn navigate_heading(&mut self, direction: i32) -> bool {
         if self.headings.is_empty() {
             return false;
         }
@@ -1247,7 +1260,6 @@ impl AppState {
         };
 
         self.current_heading = Some(new_idx);
-        self.rerender(fonts);
 
         // Scroll to make heading visible
         let heading = &self.headings[new_idx];
@@ -1270,6 +1282,18 @@ impl AppState {
         } else {
             false
         }
+    }
+
+    fn cursor_info(&self) -> Option<(u32, u32, u32, [u8; 3])> {
+        let hi = self.current_heading?;
+        let heading = &self.headings[hi];
+        let theme = default_theme();
+        let (size, _) = heading_style(&heading.level, &theme);
+        // Place cursor to the left of the fold arrow area
+        let arrow_space = (size * 0.5) as u32 + 4;
+        let cursor_x = self.margin_left.saturating_sub(arrow_space + CURSOR_MARGIN + CURSOR_WIDTH);
+        let c = theme.cursor_color.0;
+        Some((cursor_x, heading.y_pos, heading.heading_height, c))
     }
 
     fn scroll(&mut self, delta: i32) -> bool {
@@ -1519,6 +1543,7 @@ fn main() -> io::Result<()> {
             cursor::Hide,
             terminal::Clear(ClearType::All)
         )?;
+        let ci = state.cursor_info();
         display_viewport(
             &mut out,
             &state.img,
@@ -1527,6 +1552,7 @@ fn main() -> io::Result<()> {
             vp_height,
             &mut state.frame,
             None,
+            ci,
         )?;
     }
 
@@ -1604,8 +1630,8 @@ fn main() -> io::Result<()> {
                     (KeyCode::Char('N'), KeyModifiers::SHIFT) => state.navigate_search(false),
 
                     // Up/Down: navigate between headings
-                    (KeyCode::Down, KeyModifiers::NONE) => state.navigate_heading(1, &fonts),
-                    (KeyCode::Up, KeyModifiers::NONE) => state.navigate_heading(-1, &fonts),
+                    (KeyCode::Down, KeyModifiers::NONE) => state.navigate_heading(1),
+                    (KeyCode::Up, KeyModifiers::NONE) => state.navigate_heading(-1),
 
                     // Left/Right: toggle fold
                     (KeyCode::Left, KeyModifiers::NONE)
@@ -1661,6 +1687,7 @@ fn main() -> io::Result<()> {
                     None
                 };
 
+                let ci = state.cursor_info();
                 let mut out = BufWriter::new(stdout.lock());
                 display_viewport(
                     &mut out,
@@ -1670,6 +1697,7 @@ fn main() -> io::Result<()> {
                     vp_height,
                     &mut state.frame,
                     overlay.as_ref(),
+                    ci,
                 )?;
             }
         }
