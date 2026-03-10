@@ -9,8 +9,8 @@ A Rust program that renders markdown files as images and displays them in the te
 ## Usage
 
 ```
-mdbdp <markdown-file>
-mdbdp --help
+dmbdip <markdown-file>
+dmbdip --help
 ```
 
 **Requirements:** Kitty terminal (or any terminal supporting the Kitty graphics protocol), DejaVu fonts installed.
@@ -23,10 +23,10 @@ Requires Rust (1.85+ for edition 2024). Install via [rustup](https://rustup.rs/)
 cargo build --release
 ```
 
-The binary will be at `target/release/mdbdp`. Copy it to a directory in your `$PATH`:
+The binary will be at `target/release/dmbdip`. Copy it to a directory in your `$PATH`:
 
 ```
-cp target/release/mdbdp ~/.local/bin/
+cp target/release/dmbdip ~/.local/bin/
 ```
 
 ## Keybindings
