@@ -35,7 +35,7 @@ cp target/release/dmbdip ~/.local/bin/
 | Key | Action |
 |-----|--------|
 | Up/Down | Navigate between headings |
-| Left/Right/Tab | Toggle fold open/close |
+| Right/Tab | Toggle fold open/close |
 | Space | Scroll down |
 | Ctrl+Space | Scroll up |
 | j/k | Small scroll steps |
@@ -51,10 +51,11 @@ cp target/release/dmbdip ~/.local/bin/
 | Key | Action |
 |-----|--------|
 | Up/Down, j/k | Move cursor |
-| Enter | Preview selected markdown file |
-| Right / l | Enter subfolder |
+| Enter, Right / l | Open file / enter subfolder |
 | Left / h | Go to parent directory |
 | q/Esc | Quit |
+
+In document mode (after opening a file), Left/Esc returns to the tree.
 
 ## Development
 

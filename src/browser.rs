@@ -1,0 +1,443 @@
+use crossterm::{
+    cursor, execute,
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    terminal::{self, ClearType},
+};
+use std::io::{self, BufWriter, Write};
+use std::path::{Path, PathBuf};
+
+use crate::constants::SCROLL_STEP;
+use crate::fonts::Fonts;
+use crate::kitty::display_viewport;
+use crate::overlay::{render_help_overlay, render_search_bar};
+use crate::state::AppState;
+
+#[derive(Clone, Debug)]
+enum BrowserEntry {
+    Dir(String),
+    File(String),
+}
+
+fn scan_directory(dir: &Path) -> Vec<BrowserEntry> {
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            if let Ok(ft) = entry.file_type() {
+                if ft.is_dir() {
+                    dirs.push(name);
+                } else if name.ends_with(".md") || name.ends_with(".MD") {
+                    files.push(name);
+                }
+            }
+        }
+    }
+    dirs.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    files.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    let mut result = Vec::new();
+    for d in dirs {
+        result.push(BrowserEntry::Dir(d));
+    }
+    for f in files {
+        result.push(BrowserEntry::File(f));
+    }
+    result
+}
+
+struct BrowserState {
+    current_dir: PathBuf,
+    entries: Vec<BrowserEntry>,
+    cursor: usize,
+    doc_state: Option<AppState>,
+    doc_mode: bool,
+}
+
+const BROWSER_LEFT_COLS: u16 = 35;
+
+fn draw_file_list(out: &mut impl Write, state: &BrowserState, term_rows: u16) -> io::Result<()> {
+    let max_display = (term_rows.saturating_sub(2)) as usize;
+    execute!(out, cursor::MoveTo(0, 0))?;
+    let dir_str = state.current_dir.display().to_string();
+    let header = if dir_str.len() > BROWSER_LEFT_COLS as usize - 1 {
+        format!(
+            "\u{2026}{}",
+            &dir_str[dir_str.len() - (BROWSER_LEFT_COLS as usize - 2)..]
+        )
+    } else {
+        dir_str
+    };
+    write!(
+        out,
+        "\x1b[1;36m{:<width$}\x1b[0m",
+        header,
+        width = BROWSER_LEFT_COLS as usize
+    )?;
+
+    let scroll_offset = if state.cursor >= max_display {
+        state.cursor - max_display + 1
+    } else {
+        0
+    };
+
+    let total = state.entries.len();
+    for i in 0..max_display {
+        let idx = scroll_offset + i;
+        execute!(out, cursor::MoveTo(0, (i + 1) as u16))?;
+        if idx < total {
+            let is_selected = idx == state.cursor;
+            let (prefix, name_display, color, sel_color) = match &state.entries[idx] {
+                BrowserEntry::Dir(name) => (" > ", format!("{}/", name), "\x1b[1;34m", "\x1b[7;1;34m"),
+                BrowserEntry::File(name) => {
+                    if is_selected && state.doc_mode {
+                        ("   ", name.clone(), "\x1b[36m", "\x1b[7;36m")
+                    } else {
+                        ("   ", name.clone(), "\x1b[37m", "\x1b[7;37m")
+                    }
+                }
+            };
+            let display_width = BROWSER_LEFT_COLS as usize;
+            let mut line = format!("{}{}", prefix, name_display);
+            if line.len() > display_width {
+                line.truncate(display_width);
+            }
+            if is_selected {
+                write!(
+                    out,
+                    "{}{:<width$}\x1b[0m",
+                    sel_color,
+                    line,
+                    width = display_width
+                )?;
+            } else {
+                write!(
+                    out,
+                    "{}{:<width$}\x1b[0m",
+                    color,
+                    line,
+                    width = display_width
+                )?;
+            }
+        } else {
+            write!(
+                out,
+                "{:<width$}",
+                "",
+                width = BROWSER_LEFT_COLS as usize
+            )?;
+        }
+    }
+    out.flush()
+}
+
+fn browser_clear_preview(out: &mut impl Write) -> io::Result<()> {
+    write!(
+        out,
+        "\x1b_Ga=d,d=I,i=1,q=2\x1b\\\x1b_Ga=d,d=I,i=2,q=2\x1b\\"
+    )?;
+    execute!(out, terminal::Clear(ClearType::All))
+}
+
+pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u32) -> io::Result<()> {
+    let (_term_cols, term_rows) = terminal::size()?;
+    let mut state = BrowserState {
+        current_dir: dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
+        entries: scan_directory(dir),
+        cursor: 0,
+        doc_state: None,
+        doc_mode: false,
+    };
+
+    let stdout = io::stdout();
+    terminal::enable_raw_mode()?;
+    {
+        let mut out = BufWriter::new(stdout.lock());
+        execute!(
+            out,
+            terminal::EnterAlternateScreen,
+            cursor::Hide,
+            terminal::Clear(ClearType::All)
+        )?;
+        draw_file_list(&mut out, &state, term_rows)?;
+    }
+
+    let preview_width = vp_width.saturating_sub(BROWSER_LEFT_COLS as u32 * 8);
+
+    loop {
+        if let Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event::read()?
+        {
+            if state.doc_mode {
+                if let Some(ref mut ds) = state.doc_state {
+                    let needs_preview_redraw = if ds.search_mode {
+                        match (code, modifiers) {
+                            (KeyCode::Esc, _) => {
+                                ds.search_mode = false;
+                                ds.search_query.clear();
+                                ds.search_matches.clear();
+                                ds.search_highlights.clear();
+                                true
+                            }
+                            (KeyCode::Enter, _) => {
+                                ds.search_mode = false;
+                                ds.execute_search(fonts);
+                                true
+                            }
+                            (KeyCode::Backspace, _) => {
+                                ds.search_query.pop();
+                                true
+                            }
+                            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                                ds.search_query.push(c);
+                                true
+                            }
+                            _ => false,
+                        }
+                    } else {
+                        match (code, modifiers) {
+                            (KeyCode::Char('q'), _) => break,
+                            (KeyCode::Esc, _) => {
+                                state.doc_mode = false;
+                                let mut out = BufWriter::new(stdout.lock());
+                                browser_clear_preview(&mut out)?;
+                                draw_file_list(&mut out, &state, term_rows)?;
+                                continue;
+                            }
+                            (KeyCode::Char('/'), KeyModifiers::NONE) => {
+                                ds.search_mode = true;
+                                ds.search_query.clear();
+                                ds.search_matches.clear();
+                                ds.search_highlights.clear();
+                                ds.search_current = 0;
+                                true
+                            }
+                            (KeyCode::Char('n'), KeyModifiers::NONE) => ds.navigate_search(true),
+                            (KeyCode::Char('N'), KeyModifiers::SHIFT) => ds.navigate_search(false),
+                            (KeyCode::Down, KeyModifiers::NONE) => ds.navigate_heading(1),
+                            (KeyCode::Up, KeyModifiers::NONE) => ds.navigate_heading(-1),
+                            (KeyCode::Left, KeyModifiers::NONE) => {
+                                state.doc_mode = false;
+                                let mut out = BufWriter::new(stdout.lock());
+                                browser_clear_preview(&mut out)?;
+                                draw_file_list(&mut out, &state, term_rows)?;
+                                continue;
+                            }
+                            (KeyCode::Right, KeyModifiers::NONE)
+                            | (KeyCode::Tab, _) => ds.toggle_fold(fonts),
+                            (KeyCode::Char(' '), KeyModifiers::NONE) => {
+                                ds.scroll(SCROLL_STEP as i32)
+                            }
+                            (KeyCode::Char(' '), KeyModifiers::CONTROL) => {
+                                ds.scroll(-(SCROLL_STEP as i32))
+                            }
+                            (KeyCode::Char('j'), _) => ds.scroll(SCROLL_STEP as i32),
+                            (KeyCode::Char('k'), _) => ds.scroll(-(SCROLL_STEP as i32)),
+                            (KeyCode::PageDown, _) => ds.scroll(vp_height as i32 / 2),
+                            (KeyCode::PageUp, _) => ds.scroll(-(vp_height as i32 / 2)),
+                            (KeyCode::Home, _) => {
+                                let changed = ds.scroll_y != 0;
+                                ds.scroll_y = 0;
+                                ds.sync_cursor_to_scroll();
+                                changed
+                            }
+                            (KeyCode::End, _) => {
+                                let max = ds.max_scroll();
+                                let changed = ds.scroll_y != max;
+                                ds.scroll_y = max;
+                                ds.sync_cursor_to_scroll();
+                                changed
+                            }
+                            (KeyCode::Char('h'), KeyModifiers::NONE) => {
+                                let help_img =
+                                    render_help_overlay(preview_width, vp_height, fonts);
+                                let mut out = BufWriter::new(stdout.lock());
+                                display_viewport(
+                                    &mut out,
+                                    &help_img,
+                                    0,
+                                    preview_width,
+                                    vp_height,
+                                    &mut ds.frame,
+                                    Some(BROWSER_LEFT_COLS + 1),
+                                    None,
+                                    None,
+                                    &[],
+                                    0,
+                                )?;
+                                loop {
+                                    if let Event::Key(KeyEvent {
+                                        kind: KeyEventKind::Press,
+                                        ..
+                                    }) = event::read()?
+                                    {
+                                        break;
+                                    }
+                                }
+                                true
+                            }
+                            _ => false,
+                        }
+                    };
+
+                    if needs_preview_redraw {
+                        let overlay = if ds.search_mode {
+                            Some(render_search_bar(
+                                &ds.search_query,
+                                None,
+                                preview_width,
+                                fonts,
+                            ))
+                        } else if !ds.search_matches.is_empty() {
+                            Some(render_search_bar(
+                                &ds.search_query,
+                                Some((ds.search_current + 1, ds.search_matches.len())),
+                                preview_width,
+                                fonts,
+                            ))
+                        } else {
+                            None
+                        };
+                        let ci = ds.cursor_info();
+                        let hl = &ds.search_highlights;
+                        let sc = ds.search_current;
+                        let mut out = BufWriter::new(stdout.lock());
+                        display_viewport(
+                            &mut out,
+                            &ds.img,
+                            ds.scroll_y,
+                            preview_width,
+                            vp_height,
+                            &mut ds.frame,
+                            Some(BROWSER_LEFT_COLS + 1),
+                            overlay.as_ref(),
+                            ci,
+                            hl,
+                            sc,
+                        )?;
+                    }
+                }
+            } else {
+                let needs_redraw = match code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if state.cursor + 1 < state.entries.len() {
+                            state.cursor += 1;
+                        }
+                        true
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if state.cursor > 0 {
+                            state.cursor -= 1;
+                        }
+                        true
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        match state.entries.get(state.cursor).cloned() {
+                            Some(BrowserEntry::Dir(name)) => {
+                                let new_dir = state.current_dir.join(&name);
+                                state.entries = scan_directory(&new_dir);
+                                state.current_dir = new_dir.canonicalize().unwrap_or(new_dir);
+                                state.cursor = 0;
+                                state.doc_state = None;
+                                let mut out = BufWriter::new(stdout.lock());
+                                browser_clear_preview(&mut out)?;
+                            }
+                            Some(BrowserEntry::File(name)) => {
+                                let file_path = state.current_dir.join(&name);
+                                if let Ok(source) = std::fs::read_to_string(&file_path) {
+                                    let ds =
+                                        AppState::new(&source, fonts, preview_width, vp_height);
+                                    let mut out = BufWriter::new(stdout.lock());
+                                    let ci = ds.cursor_info();
+                                    let mut frame = ds.frame;
+                                    display_viewport(
+                                        &mut out,
+                                        &ds.img,
+                                        ds.scroll_y,
+                                        preview_width,
+                                        vp_height,
+                                        &mut frame,
+                                        Some(BROWSER_LEFT_COLS + 1),
+                                        None,
+                                        ci,
+                                        &ds.search_highlights,
+                                        ds.search_current,
+                                    )?;
+                                    state.doc_state = Some(AppState { frame, ..ds });
+                                    state.doc_mode = true;
+                                }
+                            }
+                            None => {}
+                        }
+                        true
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        if let Some(parent) = state.current_dir.parent() {
+                            let parent = parent.to_path_buf();
+                            state.entries = scan_directory(&parent);
+                            state.current_dir = parent.canonicalize().unwrap_or(parent);
+                            state.cursor = 0;
+                            state.doc_state = None;
+                            let mut out = BufWriter::new(stdout.lock());
+                            browser_clear_preview(&mut out)?;
+                        }
+                        true
+                    }
+                    KeyCode::Enter => {
+                        if let Some(BrowserEntry::File(name)) =
+                            state.entries.get(state.cursor).cloned()
+                        {
+                            let file_path = state.current_dir.join(&name);
+                            if let Ok(source) = std::fs::read_to_string(&file_path) {
+                                let ds =
+                                    AppState::new(&source, fonts, preview_width, vp_height);
+                                let mut out = BufWriter::new(stdout.lock());
+                                let ci = ds.cursor_info();
+                                let mut frame = ds.frame;
+                                display_viewport(
+                                    &mut out,
+                                    &ds.img,
+                                    ds.scroll_y,
+                                    preview_width,
+                                    vp_height,
+                                    &mut frame,
+                                    Some(BROWSER_LEFT_COLS + 1),
+                                    None,
+                                    ci,
+                                    &ds.search_highlights,
+                                    ds.search_current,
+                                )?;
+                                state.doc_state = Some(AppState { frame, ..ds });
+                                state.doc_mode = true;
+                            }
+                        }
+                        true
+                    }
+                    _ => false,
+                };
+                if needs_redraw {
+                    let mut out = BufWriter::new(stdout.lock());
+                    draw_file_list(&mut out, &state, term_rows)?;
+                }
+            }
+        }
+    }
+
+    {
+        let mut out = BufWriter::new(stdout.lock());
+        write!(
+            out,
+            "\x1b_Ga=d,d=I,i=1,q=2\x1b\\\x1b_Ga=d,d=I,i=2,q=2\x1b\\"
+        )?;
+        execute!(out, cursor::Show, terminal::LeaveAlternateScreen)?;
+    }
+    terminal::disable_raw_mode()?;
+    Ok(())
+}
