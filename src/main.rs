@@ -1097,6 +1097,8 @@ fn display_viewport(
     frame: &mut u32,
     overlay: Option<&RgbImage>,
     cursor_info: Option<(u32, u32, u32, [u8; 3])>,
+    highlights: &[(u32, u32, u32, u32, usize)],
+    current_match: usize,
 ) -> io::Result<()> {
     let src_w = vp_width.min(img.width());
     let src_h = vp_height.min(img.height().saturating_sub(scroll_y));
@@ -1109,6 +1111,40 @@ fn display_viewport(
     for row in 0..src_h as usize {
         let offset = row_start + row * img_stride;
         viewport_data.extend_from_slice(&raw[offset..offset + src_w as usize * 3]);
+    }
+
+    // Draw search highlights
+    for &(hx, hy, hw, hh, midx) in highlights {
+        if hy + hh <= scroll_y || hy >= scroll_y + src_h {
+            continue;
+        }
+        let is_current = midx == current_match;
+        let (color, alpha): ([u8; 3], f32) = if is_current {
+            ([255, 180, 50], 0.35)
+        } else {
+            ([180, 180, 60], 0.20)
+        };
+        let vp_y_start = hy.saturating_sub(scroll_y) as usize;
+        let vp_y_end = ((hy + hh).saturating_sub(scroll_y) as usize).min(src_h as usize);
+        for row in vp_y_start..vp_y_end {
+            for px in 0..hw as usize {
+                let x = hx as usize + px;
+                if x < src_w as usize {
+                    let offset = row * stride + x * 3;
+                    if offset + 2 < viewport_data.len() {
+                        let inv = 1.0 - alpha;
+                        viewport_data[offset] =
+                            (viewport_data[offset] as f32 * inv + color[0] as f32 * alpha) as u8;
+                        viewport_data[offset + 1] =
+                            (viewport_data[offset + 1] as f32 * inv + color[1] as f32 * alpha)
+                                as u8;
+                        viewport_data[offset + 2] =
+                            (viewport_data[offset + 2] as f32 * inv + color[2] as f32 * alpha)
+                                as u8;
+                    }
+                }
+            }
+        }
     }
 
     // Draw cursor bar onto viewport data
@@ -1184,6 +1220,7 @@ struct AppState {
     search_query: String,
     search_matches: Vec<usize>, // indices into block_y_positions
     search_current: usize,
+    search_highlights: Vec<(u32, u32, u32, u32, usize)>, // (x, y, w, h, match_idx)
 }
 
 impl AppState {
@@ -1207,6 +1244,7 @@ impl AppState {
             search_query: String::new(),
             search_matches: Vec::new(),
             search_current: 0,
+            search_highlights: Vec::new(),
         };
         state.rerender(fonts);
         state
@@ -1323,23 +1361,37 @@ impl AppState {
         }
     }
 
-    fn execute_search(&mut self) {
+    fn execute_search(&mut self, fonts: &Fonts) {
         self.search_matches.clear();
+        self.search_highlights.clear();
         self.search_current = 0;
         if self.search_query.is_empty() {
             return;
         }
         let query = self.search_query.to_lowercase();
-        for (pos_idx, &(bi, _y)) in self.block_y_positions.iter().enumerate() {
-            if block_contains_text(&self.blocks[bi], &query) {
-                self.search_matches.push(pos_idx);
+        let theme = default_theme();
+        let content_width = self.vp_width - 2 * self.margin_left;
+        let mut match_idx = 0usize;
+
+        for (pos_idx, &(bi, block_y)) in self.block_y_positions.iter().enumerate() {
+            let block = &self.blocks[bi];
+            if !block_contains_text(block, &query) {
+                continue;
             }
+            self.search_matches.push(pos_idx);
+
+            let highlights = compute_block_highlights(
+                block, block_y, &query, fonts, &theme,
+                content_width, self.margin_left, match_idx,
+                &self.headings, bi,
+            );
+            self.search_highlights.extend(highlights);
+            match_idx += 1;
         }
-        // Scroll to first match
-        if !self.search_matches.is_empty() {
-            let pos_idx = self.search_matches[0];
-            let (_bi, y) = self.block_y_positions[pos_idx];
-            self.scroll_y = y.saturating_sub(PARAGRAPH_GAP).min(self.max_scroll());
+
+        // Scroll to first highlight
+        if let Some(&(_, hy, _, _, _)) = self.search_highlights.first() {
+            self.scroll_y = hy.saturating_sub(self.vp_height / 4).min(self.max_scroll());
         }
     }
 
@@ -1356,11 +1408,16 @@ impl AppState {
                 self.search_current - 1
             };
         }
-        let pos_idx = self.search_matches[self.search_current];
-        let (_bi, y) = self.block_y_positions[pos_idx];
-        let old_scroll = self.scroll_y;
-        self.scroll_y = y.saturating_sub(PARAGRAPH_GAP).min(self.max_scroll());
-        self.scroll_y != old_scroll
+        // Scroll to first highlight of the current match
+        let target_idx = self.search_current;
+        if let Some(&(_, hy, _, _, _)) = self
+            .search_highlights
+            .iter()
+            .find(|h| h.4 == target_idx)
+        {
+            self.scroll_y = hy.saturating_sub(self.vp_height / 4).min(self.max_scroll());
+        }
+        true // always redraw to update highlight colors
     }
 }
 
@@ -1383,6 +1440,117 @@ fn block_contains_text(block: &Block, query: &str) -> bool {
             k.to_lowercase().contains(query) || v.to_lowercase().contains(query)
         }),
     }
+}
+
+fn find_highlights_in_text(
+    text: &str,
+    query: &str,
+    font: &FontVec,
+    scale: PxScale,
+    line_height: u32,
+    x: u32,
+    y: u32,
+    match_idx: usize,
+) -> Vec<(u32, u32, u32, u32, usize)> {
+    let mut highlights = Vec::new();
+    let text_lower = text.to_lowercase();
+    let mut search_from = 0;
+    while search_from < text_lower.len() {
+        if let Some(byte_pos) = text_lower[search_from..].find(query) {
+            let match_start = search_from + byte_pos;
+            let match_end = match_start + query.len();
+            let prefix = &text[..match_start];
+            let match_text = &text[match_start..match_end];
+            let x_offset = text_size(scale, font, prefix).0;
+            let match_width = text_size(scale, font, match_text).0;
+            highlights.push((x + x_offset, y, match_width, line_height, match_idx));
+            search_from = match_end;
+        } else {
+            break;
+        }
+    }
+    highlights
+}
+
+fn compute_block_highlights(
+    block: &Block,
+    block_y: u32,
+    query: &str,
+    fonts: &Fonts,
+    theme: &Theme,
+    content_width: u32,
+    margin_left: u32,
+    match_idx: usize,
+    headings: &[HeadingInfo],
+    block_index: usize,
+) -> Vec<(u32, u32, u32, u32, usize)> {
+    let mut highlights = Vec::new();
+    match block {
+        Block::Paragraph { spans } => {
+            let scale = PxScale::from(theme.body_size);
+            let indented_width = content_width - BLOCK_INDENT;
+            let lines = wrap_spans(spans, fonts, scale, indented_width);
+            let line_height = (theme.body_size * 1.4) as u32;
+            let x_start = margin_left + BLOCK_INDENT;
+            let mut y = block_y;
+            for line in &lines {
+                let plain = spans_to_plain(line);
+                highlights.extend(find_highlights_in_text(
+                    &plain, query, &fonts.regular, scale, line_height,
+                    x_start, y, match_idx,
+                ));
+                y += line_height;
+            }
+        }
+        Block::Heading { level, spans } => {
+            let (size, _) = heading_style(level, theme);
+            let scale = PxScale::from(size);
+            // Find the heading's number prefix
+            let hi = headings.iter().position(|h| h.block_index == block_index);
+            let number = hi.map(|i| headings[i].number.as_str()).unwrap_or("");
+            let plain = spans_to_plain(spans);
+            let numbered_text = format!("{} {}", number, plain);
+            let lines = wrap_spans(
+                &[Span { text: numbered_text, style: SpanStyle::Bold }],
+                fonts, scale, content_width,
+            );
+            let line_height = (size * 1.3) as u32;
+            let mut y = block_y;
+            for line in &lines {
+                let line_plain = spans_to_plain(line);
+                highlights.extend(find_highlights_in_text(
+                    &line_plain, query, &fonts.bold, scale, line_height,
+                    margin_left, y, match_idx,
+                ));
+                y += line_height;
+            }
+        }
+        Block::CodeBlock { text } => {
+            let scale = PxScale::from(theme.body_size);
+            let indented_width = content_width - BLOCK_INDENT;
+            let pad = 10u32;
+            let inner_width = indented_width - pad * 2;
+            let line_height = (theme.body_size * 1.4) as u32;
+            let x_start = margin_left + BLOCK_INDENT + pad;
+            let mut y = block_y + pad;
+            for source_line in text.lines() {
+                let wrapped = wrap_spans(
+                    &[Span { text: source_line.to_string(), style: SpanStyle::Code }],
+                    fonts, scale, inner_width,
+                );
+                for line in &wrapped {
+                    let plain = spans_to_plain(line);
+                    highlights.extend(find_highlights_in_text(
+                        &plain, query, &fonts.mono, scale, line_height,
+                        x_start, y, match_idx,
+                    ));
+                    y += line_height;
+                }
+            }
+        }
+        _ => {}
+    }
+    highlights
 }
 
 fn render_help_overlay(vp_width: u32, vp_height: u32, fonts: &Fonts) -> RgbImage {
@@ -1565,6 +1733,8 @@ fn main() -> io::Result<()> {
             &mut state.frame,
             None,
             ci,
+            &state.search_highlights,
+            state.search_current,
         )?;
     }
 
@@ -1583,11 +1753,12 @@ fn main() -> io::Result<()> {
                         state.search_mode = false;
                         state.search_query.clear();
                         state.search_matches.clear();
+                        state.search_highlights.clear();
                         true
                     }
                     (KeyCode::Enter, _) => {
                         state.search_mode = false;
-                        state.execute_search();
+                        state.execute_search(&fonts);
                         true
                     }
                     (KeyCode::Backspace, _) => {
@@ -1633,6 +1804,7 @@ fn main() -> io::Result<()> {
                         state.search_mode = true;
                         state.search_query.clear();
                         state.search_matches.clear();
+                        state.search_highlights.clear();
                         state.search_current = 0;
                         true
                     }
@@ -1700,6 +1872,8 @@ fn main() -> io::Result<()> {
                 };
 
                 let ci = state.cursor_info();
+                let hl = &state.search_highlights;
+                let sc = state.search_current;
                 let mut out = BufWriter::new(stdout.lock());
                 display_viewport(
                     &mut out,
@@ -1710,6 +1884,8 @@ fn main() -> io::Result<()> {
                     &mut state.frame,
                     overlay.as_ref(),
                     ci,
+                    hl,
+                    sc,
                 )?;
             }
         }
