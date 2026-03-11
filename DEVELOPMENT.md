@@ -23,6 +23,12 @@
 - Clean git history if appropriate (squash fixup commits)
 - Evaluate quality every few commits and after fixing bugs
 
+## Manual testing
+
+The file sample.md can be used for manual testing
+
+# Track advancement
+
 ## Todo
 
 (no pending tasks)

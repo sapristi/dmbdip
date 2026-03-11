@@ -26,6 +26,21 @@ fn main() {
 |-----|-------|
 | a   | 1     |
 | b   | 2     |
+
+## Lists
+
+- First bullet
+- Second bullet
+- Third bullet
+
+1. First numbered
+2. Second numbered
+3. Third numbered
+
+- Top level
+  - Nested bullet
+    - Deep nested
+- Back to top
 ";
 
 #[cfg(test)]

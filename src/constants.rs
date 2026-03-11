@@ -7,6 +7,7 @@ pub(crate) const CURSOR_MARGIN: u32 = 6; // gap between cursor and text
 pub(crate) const MAX_CONTENT_WIDTH: u32 = 900;
 pub(crate) const H1_EXTRA_MARGIN: u32 = 40;
 pub(crate) const BLOCK_INDENT: u32 = 24;
+pub(crate) const LIST_INDENT_PER_LEVEL: u32 = 24;
 
 pub(crate) const KEYBINDINGS: &[(&str, &str)] = &[
     ("Up / Down", "Navigate between headings"),

@@ -9,7 +9,7 @@ use crate::parsing::parse_markdown;
 use crate::render::{heading_style, render_markdown, wrap_code_lines, wrap_heading_text};
 use crate::text::{spans_to_plain, wrap_spans};
 use crate::theme::{default_theme, Theme};
-use crate::types::{Block, HeadingInfo};
+use crate::types::{Block, HeadingInfo, ListMarker};
 
 pub(crate) struct AppState {
     pub(crate) blocks: Vec<Block>,
@@ -258,6 +258,9 @@ fn block_contains_text(block: &Block, query: &str) -> bool {
         Block::Metadata { entries } => entries.iter().any(|(k, v)| {
             k.to_lowercase().contains(query) || v.to_lowercase().contains(query)
         }),
+        Block::List { items } => items.iter().any(|item| {
+            spans_to_plain(&item.spans).to_lowercase().contains(query)
+        }),
     }
 }
 
@@ -354,6 +357,33 @@ fn compute_block_highlights(
                         &plain, query, &fonts.mono, scale, line_height,
                         x_start, y, match_idx,
                     ));
+                    y += line_height;
+                }
+            }
+        }
+        Block::List { items } => {
+            let scale = PxScale::from(theme.body_size);
+            let line_height = (theme.body_size * 1.4) as u32;
+            let mut y = block_y;
+            for item in items {
+                let indent = BLOCK_INDENT + item.depth * LIST_INDENT_PER_LEVEL;
+                let mt = match &item.marker {
+                    ListMarker::Bullet => "\u{2022}  ".to_string(),
+                    ListMarker::Ordered(n) => format!("{}. ", n),
+                };
+                let marker_w = text_size(scale, &fonts.regular, &mt).0;
+                let text_width = content_width.saturating_sub(indent + marker_w);
+                let x_start = margin_left + indent + marker_w;
+                let lines = wrap_spans(&item.spans, fonts, scale, text_width);
+                for line in &lines {
+                    let plain = spans_to_plain(line);
+                    highlights.extend(find_highlights_in_text(
+                        &plain, query, &fonts.regular, scale, line_height,
+                        x_start, y, match_idx,
+                    ));
+                    y += line_height;
+                }
+                if lines.is_empty() {
                     y += line_height;
                 }
             }

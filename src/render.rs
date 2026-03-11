@@ -9,7 +9,7 @@ use crate::fonts::Fonts;
 use crate::headings::is_block_folded;
 use crate::text::{draw_spans, spans_to_plain, wrap_spans};
 use crate::theme::Theme;
-use crate::types::{Block, HeadingInfo, Span, SpanStyle};
+use crate::types::{Block, HeadingInfo, ListItem, ListMarker, Span, SpanStyle};
 
 const PREVIEW_MARGIN: u32 = 10;
 
@@ -96,6 +96,10 @@ pub(crate) fn render_preview(
             Block::Table { headers, rows } => {
                 y = render_table(&mut img, headers, rows, fonts, &theme, y, content_width - BLOCK_INDENT, margin_left + BLOCK_INDENT);
                 y += PARAGRAPH_GAP * 2;
+            }
+            Block::List { items } => {
+                y = render_list(&mut img, items, fonts, &theme, y, content_width, margin_left);
+                y += PARAGRAPH_GAP;
             }
         }
     }
@@ -206,6 +210,10 @@ pub(crate) fn render_markdown(
                 y = render_table(&mut img, headers, rows, fonts, &theme, y, content_width - BLOCK_INDENT, margin_left + BLOCK_INDENT);
                 y += PARAGRAPH_GAP * 2;
             }
+            Block::List { items } => {
+                y = render_list(&mut img, items, fonts, &theme, y, content_width, margin_left);
+                y += PARAGRAPH_GAP;
+            }
         }
     }
 
@@ -302,6 +310,10 @@ fn compute_total_height(
             Block::Table { headers, rows } => {
                 h += compute_table_height(headers, rows, fonts, theme, content_width - BLOCK_INDENT);
                 h += PARAGRAPH_GAP * 2;
+            }
+            Block::List { items } => {
+                h += compute_list_height(items, fonts, theme, content_width);
+                h += PARAGRAPH_GAP;
             }
         }
     }
@@ -528,6 +540,79 @@ fn render_table(
     y
 }
 
+fn marker_text(marker: &ListMarker) -> String {
+    match marker {
+        ListMarker::Bullet => "\u{2022}  ".to_string(),
+        ListMarker::Ordered(n) => format!("{}. ", n),
+    }
+}
+
+fn compute_list_height(
+    items: &[ListItem],
+    fonts: &Fonts,
+    theme: &Theme,
+    content_width: u32,
+) -> u32 {
+    let scale = PxScale::from(theme.body_size);
+    let line_height = (theme.body_size * 1.4) as u32;
+    let mut h: u32 = 0;
+
+    for item in items {
+        let indent = BLOCK_INDENT + item.depth * LIST_INDENT_PER_LEVEL;
+        let mt = marker_text(&item.marker);
+        let marker_w = text_size(scale, &fonts.regular, &mt).0;
+        let text_width = content_width.saturating_sub(indent + marker_w);
+        let lines = wrap_spans(&item.spans, fonts, scale, text_width);
+        h += lines.len().max(1) as u32 * line_height;
+    }
+
+    h
+}
+
+fn render_list(
+    img: &mut RgbImage,
+    items: &[ListItem],
+    fonts: &Fonts,
+    theme: &Theme,
+    start_y: u32,
+    content_width: u32,
+    margin_left: u32,
+) -> u32 {
+    let scale = PxScale::from(theme.body_size);
+    let line_height = (theme.body_size * 1.4) as u32;
+    let mut y = start_y;
+
+    for item in items {
+        let indent = BLOCK_INDENT + item.depth * LIST_INDENT_PER_LEVEL;
+        let x = margin_left + indent;
+        let mt = marker_text(&item.marker);
+        let marker_w = text_size(scale, &fonts.regular, &mt).0;
+
+        draw_text_mut(
+            img,
+            theme.body_color,
+            x as i32,
+            y as i32,
+            scale,
+            &fonts.regular,
+            &mt,
+        );
+
+        let text_width = content_width.saturating_sub(indent + marker_w);
+        let lines = wrap_spans(&item.spans, fonts, scale, text_width);
+        for (li, line) in lines.iter().enumerate() {
+            let lx = if li == 0 { x + marker_w } else { x + marker_w };
+            draw_spans(img, line, lx, y, scale, fonts, theme);
+            y += line_height;
+        }
+        if lines.is_empty() {
+            y += line_height;
+        }
+    }
+
+    y
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,6 +685,16 @@ mod tests {
         let bg_pixel = theme.bg;
         let has_content = img.pixels().any(|p| *p != bg_pixel);
         assert!(has_content, "preview image should not be entirely blank");
+    }
+
+    #[test]
+    fn render_list_smoke_test() {
+        let fonts = test_fonts();
+        let md = "- Item one\n- Item two\n\n1. First\n2. Second\n";
+        let blocks = parse_markdown(md);
+        let mut headings = build_headings(&blocks);
+        let (img, _, _) = render_markdown(&blocks, &mut headings, 800, 600, &fonts);
+        assert!(img.height() > 100);
     }
 
     #[test]

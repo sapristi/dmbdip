@@ -1,6 +1,6 @@
 use pulldown_cmark::{Event as MdEvent, Options, Parser, Tag, TagEnd};
 
-use crate::types::{Block, Span, SpanStyle};
+use crate::types::{Block, ListItem, ListMarker, Span, SpanStyle};
 
 pub(crate) fn parse_metadata(source: &str) -> (Vec<(String, String)>, &str) {
     let trimmed = source.trim_start();
@@ -59,6 +59,11 @@ pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
     let mut in_code_block = false;
     let mut code_text = String::new();
 
+    let mut list_stack: Vec<ListMarker> = Vec::new();
+    let mut list_items: Vec<ListItem> = Vec::new();
+    let mut list_item_spans_stack: Vec<Vec<Span>> = Vec::new();
+    let mut list_item_insert_idx: Vec<usize> = Vec::new();
+
     let current_style = |stack: &[SpanStyle]| stack.last().cloned().unwrap_or(SpanStyle::Normal);
 
     for event in parser {
@@ -76,7 +81,7 @@ pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
                 }
             }
             MdEvent::Start(Tag::Paragraph) => {
-                if !in_table {
+                if !in_table && list_stack.is_empty() {
                     in_paragraph = true;
                     spans.clear();
                 }
@@ -109,7 +114,13 @@ pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
                 });
             }
             MdEvent::Code(code) => {
-                let target = if in_table { &mut cell_spans } else { &mut spans };
+                let target = if in_table {
+                    &mut cell_spans
+                } else if !list_item_spans_stack.is_empty() {
+                    list_item_spans_stack.last_mut().unwrap()
+                } else {
+                    &mut spans
+                };
                 target.push(Span {
                     text: code.to_string(),
                     style: SpanStyle::Code,
@@ -157,6 +168,11 @@ pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
                         text: t.to_string(),
                         style: current_style(&style_stack),
                     });
+                } else if !list_item_spans_stack.is_empty() {
+                    list_item_spans_stack.last_mut().unwrap().push(Span {
+                        text: t.to_string(),
+                        style: current_style(&style_stack),
+                    });
                 } else {
                     spans.push(Span {
                         text: t.to_string(),
@@ -164,15 +180,52 @@ pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
                     });
                 }
             }
+            MdEvent::Start(Tag::List(first_number)) => {
+                match first_number {
+                    Some(start) => list_stack.push(ListMarker::Ordered(start)),
+                    None => list_stack.push(ListMarker::Bullet),
+                }
+            }
+            MdEvent::Start(Tag::Item) => {
+                list_item_spans_stack.push(Vec::new());
+                list_item_insert_idx.push(list_items.len());
+            }
             MdEvent::End(TagEnd::Item) => {
-                // Commit tight list items that weren't wrapped in Paragraph events
-                let s = std::mem::take(&mut spans);
-                if !s.is_empty() {
-                    blocks.push(Block::Paragraph { spans: s });
+                let item_spans = list_item_spans_stack.pop().unwrap_or_default();
+                let insert_at = list_item_insert_idx.pop().unwrap_or(list_items.len());
+                let depth = (list_stack.len() as u32).saturating_sub(1);
+                let marker = match list_stack.last_mut() {
+                    Some(ListMarker::Ordered(n)) => {
+                        let m = ListMarker::Ordered(*n);
+                        *n += 1;
+                        m
+                    }
+                    Some(ListMarker::Bullet) => ListMarker::Bullet,
+                    None => ListMarker::Bullet,
+                };
+                list_items.insert(insert_at, ListItem {
+                    marker,
+                    depth,
+                    spans: item_spans,
+                });
+            }
+            MdEvent::End(TagEnd::List(_)) => {
+                list_stack.pop();
+                if list_stack.is_empty() {
+                    let items = std::mem::take(&mut list_items);
+                    if !items.is_empty() {
+                        blocks.push(Block::List { items });
+                    }
                 }
             }
             MdEvent::SoftBreak | MdEvent::HardBreak => {
-                let target = if in_table { &mut cell_spans } else { &mut spans };
+                let target = if in_table {
+                    &mut cell_spans
+                } else if !list_item_spans_stack.is_empty() {
+                    list_item_spans_stack.last_mut().unwrap()
+                } else {
+                    &mut spans
+                };
                 target.push(Span {
                     text: " ".to_string(),
                     style: SpanStyle::Normal,
@@ -248,6 +301,48 @@ mod tests {
             assert_eq!(rows.len(), 2);
         } else {
             panic!("expected Table");
+        }
+    }
+
+    #[test]
+    fn parse_unordered_list() {
+        let blocks = parse_markdown("- Alpha\n- Beta\n- Gamma\n");
+        let list = blocks.iter().find(|b| matches!(b, Block::List { .. }));
+        assert!(list.is_some(), "should produce a List block");
+        if let Block::List { items } = list.unwrap() {
+            assert_eq!(items.len(), 3);
+            for item in items {
+                assert!(matches!(item.marker, crate::types::ListMarker::Bullet));
+                assert_eq!(item.depth, 0);
+            }
+            assert_eq!(items[0].spans[0].text, "Alpha");
+        }
+    }
+
+    #[test]
+    fn parse_ordered_list() {
+        let blocks = parse_markdown("1. One\n2. Two\n3. Three\n");
+        let list = blocks.iter().find(|b| matches!(b, Block::List { .. }));
+        assert!(list.is_some());
+        if let Block::List { items } = list.unwrap() {
+            assert_eq!(items.len(), 3);
+            assert!(matches!(items[0].marker, crate::types::ListMarker::Ordered(1)));
+            assert!(matches!(items[1].marker, crate::types::ListMarker::Ordered(2)));
+            assert!(matches!(items[2].marker, crate::types::ListMarker::Ordered(3)));
+        }
+    }
+
+    #[test]
+    fn parse_nested_list() {
+        let blocks = parse_markdown("- Top\n    - Nested\n        - Deep\n- Back\n");
+        let list = blocks.iter().find(|b| matches!(b, Block::List { .. }));
+        assert!(list.is_some());
+        if let Block::List { items } = list.unwrap() {
+            assert_eq!(items.len(), 4);
+            assert_eq!(items[0].depth, 0);
+            assert_eq!(items[1].depth, 1);
+            assert_eq!(items[2].depth, 2);
+            assert_eq!(items[3].depth, 0);
         }
     }
 

@@ -37,6 +37,19 @@ impl Span {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum ListMarker {
+    Bullet,
+    Ordered(u64),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ListItem {
+    pub(crate) marker: ListMarker,
+    pub(crate) depth: u32,
+    pub(crate) spans: Vec<Span>,
+}
+
 #[derive(Clone)]
 pub(crate) enum Block {
     Heading {
@@ -55,6 +68,9 @@ pub(crate) enum Block {
     },
     Metadata {
         entries: Vec<(String, String)>,
+    },
+    List {
+        items: Vec<ListItem>,
     },
 }
 

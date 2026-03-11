@@ -72,11 +72,12 @@ mod tests {
     fn heading_numbering() {
         let blocks = parse_markdown(SAMPLE_MD);
         let headings = build_headings(&blocks);
-        assert_eq!(headings.len(), 4);
+        assert_eq!(headings.len(), 5);
         assert_eq!(headings[0].number, "1.");
         assert_eq!(headings[1].number, "1.1.");
         assert_eq!(headings[2].number, "1.1.1.");
         assert_eq!(headings[3].number, "1.2.");
+        assert_eq!(headings[4].number, "1.3.");
     }
 
     #[test]
