@@ -57,7 +57,11 @@ fn main() -> io::Result<()> {
     if path.is_dir() {
         browser::run_browser(path, None, &fonts, vp_width, vp_height)
     } else {
-        let dir = path.parent().unwrap_or(Path::new("."));
+        let dir = match path.parent() {
+            Some(p) if p.as_os_str().is_empty() => Path::new("."),
+            Some(p) => p,
+            None => Path::new("."),
+        };
         browser::run_browser(dir, Some(path), &fonts, vp_width, vp_height)
     }
 }

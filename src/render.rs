@@ -11,6 +11,8 @@ use crate::text::{draw_spans, spans_to_plain, wrap_spans};
 use crate::theme::Theme;
 use crate::types::{Block, HeadingInfo, Span, SpanStyle};
 
+const PREVIEW_MARGIN: u32 = 10;
+
 pub(crate) fn render_preview(
     blocks: &[Block],
     headings: &[HeadingInfo],
@@ -19,8 +21,8 @@ pub(crate) fn render_preview(
     fonts: &Fonts,
 ) -> RgbImage {
     let theme = crate::theme::default_theme();
-    let content_width = (width - MARGIN_LEFT - MARGIN_RIGHT).min(MAX_CONTENT_WIDTH);
-    let margin_left = (width - content_width) / 2;
+    let content_width = (width - PREVIEW_MARGIN * 2).min(MAX_CONTENT_WIDTH);
+    let margin_left = PREVIEW_MARGIN;
 
     let mut img = RgbImage::from_pixel(width, max_height, theme.bg);
     let mut y: u32 = PARAGRAPH_GAP;

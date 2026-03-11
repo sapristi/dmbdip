@@ -107,6 +107,7 @@ struct BrowserState {
 }
 
 const BROWSER_LEFT_COLS: u16 = 35;
+const DOC_EXTRA_MARGIN: u32 = 40;
 
 fn draw_file_list(out: &mut impl Write, state: &BrowserState, term_rows: u16) -> io::Result<()> {
     let max_display = (term_rows.saturating_sub(2)) as usize;
@@ -241,7 +242,9 @@ fn doc_width(vp_width: u32, file_list_visible: bool) -> u32 {
     if file_list_visible {
         vp_width.saturating_sub(BROWSER_LEFT_COLS as u32 * 8)
     } else {
-        vp_width
+        // Render wider than viewport so centering produces extra left margin.
+        // display_viewport crops to vp_width, cutting the right edge.
+        vp_width + DOC_EXTRA_MARGIN * 2
     }
 }
 
