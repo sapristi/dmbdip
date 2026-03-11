@@ -63,6 +63,7 @@ impl AppState {
             &self.blocks,
             &mut self.headings,
             self.vp_width,
+            self.vp_height,
             fonts,
         );
         self.img = img;

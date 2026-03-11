@@ -105,13 +105,14 @@ pub(crate) fn render_markdown(
     blocks: &[Block],
     headings: &mut [HeadingInfo],
     width: u32,
+    vp_height: u32,
     fonts: &Fonts,
 ) -> (RgbImage, Vec<(usize, u32)>, u32) {
     let theme = crate::theme::default_theme();
     let content_width = (width - MARGIN_LEFT - MARGIN_RIGHT).min(MAX_CONTENT_WIDTH);
     let margin_left = (width - content_width) / 2;
 
-    let total_height = compute_total_height(blocks, headings, fonts, &theme, content_width);
+    let total_height = compute_total_height(blocks, headings, fonts, &theme, content_width, vp_height);
 
     let mut img = RgbImage::from_pixel(width, total_height.max(1), theme.bg);
     let mut y: u32 = PARAGRAPH_GAP;
@@ -252,6 +253,7 @@ fn compute_total_height(
     fonts: &Fonts,
     theme: &Theme,
     content_width: u32,
+    vp_height: u32,
 ) -> u32 {
     let mut h: u32 = PARAGRAPH_GAP;
     let mut heading_idx: usize = 0;
@@ -302,7 +304,7 @@ fn compute_total_height(
         }
     }
 
-    h + PARAGRAPH_GAP
+    h + PARAGRAPH_GAP + vp_height / 2
 }
 
 fn render_metadata(
@@ -536,7 +538,7 @@ mod tests {
         let fonts = test_fonts();
         let blocks = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
-        let (img, positions, margin_left) = render_markdown(&blocks, &mut headings, 800, &fonts);
+        let (img, positions, margin_left) = render_markdown(&blocks, &mut headings, 800, 600, &fonts);
 
         assert!(img.width() == 800);
         assert!(img.height() > 100, "image too short: {}", img.height());
@@ -549,7 +551,7 @@ mod tests {
         let fonts = test_fonts();
         let blocks = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
-        render_markdown(&blocks, &mut headings, 800, &fonts);
+        render_markdown(&blocks, &mut headings, 800, 600, &fonts);
 
         for i in 1..headings.len() {
             assert!(
@@ -569,11 +571,11 @@ mod tests {
         let blocks = parse_markdown(SAMPLE_MD);
 
         let mut headings_open = build_headings(&blocks);
-        let (img_open, _, _) = render_markdown(&blocks, &mut headings_open, 800, &fonts);
+        let (img_open, _, _) = render_markdown(&blocks, &mut headings_open, 800, 600, &fonts);
 
         let mut headings_folded = build_headings(&blocks);
         headings_folded[0].folded = true;
-        let (img_folded, _, _) = render_markdown(&blocks, &mut headings_folded, 800, &fonts);
+        let (img_folded, _, _) = render_markdown(&blocks, &mut headings_folded, 800, 600, &fonts);
 
         assert!(
             img_folded.height() < img_open.height(),
@@ -604,7 +606,7 @@ mod tests {
         for width in [400, 800, 1200, 1920] {
             let blocks = parse_markdown(SAMPLE_MD);
             let mut headings = build_headings(&blocks);
-            let (img, _, _) = render_markdown(&blocks, &mut headings, width, &fonts);
+            let (img, _, _) = render_markdown(&blocks, &mut headings, width, 600, &fonts);
             assert_eq!(img.width(), width);
             assert!(img.height() > 0);
         }
