@@ -68,6 +68,7 @@ cp target/release/dmbdip ~/.local/bin/
 | Up/Down, j/k | Move cursor |
 | Right/Enter | Open file / enter subfolder |
 | Left | Go to parent directory |
+| e | Open in $EDITOR |
 | h | Show help |
 | q/Esc/Ctrl-C | Quit |
 

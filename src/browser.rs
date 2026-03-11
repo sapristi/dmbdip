@@ -359,24 +359,34 @@ pub(crate) fn run_browser(
                     execute!(out, terminal::EnterAlternateScreen, cursor::Hide)?;
                 }
                 terminal::enable_raw_mode()?;
-                // Reload the file in case it was edited
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    let cur_w = doc_width(vp_width, state.file_list_visible);
-                    let new_ds = AppState::new(&content, fonts, cur_w, vp_height);
-                    state.doc_state = Some(new_ds);
-                    state.preview_cache.entries.retain(|(p, _)| p != path);
-                }
-                // Redraw
-                if let Some(ref mut ds) = state.doc_state {
-                    let cur_w = doc_width(vp_width, state.file_list_visible);
-                    let col = doc_col(state.file_list_visible);
-                    let ci = ds.cursor_info();
+                // Invalidate preview cache for the edited file
+                state.preview_cache.entries.retain(|(p, _)| p != path);
+                if state.doc_mode {
+                    // Reload the file in case it was edited
+                    if let Ok(content) = std::fs::read_to_string(path) {
+                        let cur_w = doc_width(vp_width, state.file_list_visible);
+                        let new_ds = AppState::new(&content, fonts, cur_w, vp_height);
+                        state.doc_state = Some(new_ds);
+                    }
+                    // Redraw document view
+                    if let Some(ref mut ds) = state.doc_state {
+                        let cur_w = doc_width(vp_width, state.file_list_visible);
+                        let col = doc_col(state.file_list_visible);
+                        let ci = ds.cursor_info();
+                        let mut out = BufWriter::new(stdout.lock());
+                        execute!(out, terminal::Clear(ClearType::All))?;
+                        display_viewport(
+                            &mut out, &ds.img, ds.scroll_y, cur_w, vp_height,
+                            &mut ds.frame, col, None, ci, &ds.search_highlights, ds.search_current,
+                        )?;
+                    }
+                } else {
+                    // Redraw browser view
+                    state.doc_path = None;
                     let mut out = BufWriter::new(stdout.lock());
                     execute!(out, terminal::Clear(ClearType::All))?;
-                    display_viewport(
-                        &mut out, &ds.img, ds.scroll_y, cur_w, vp_height,
-                        &mut ds.frame, col, None, ci, &ds.search_highlights, ds.search_current,
-                    )?;
+                    draw_file_list(&mut out, &state, term_rows)?;
+                    show_preview(&mut out, &mut state, fonts, preview_width, vp_height)?;
                 }
             }
             continue;
@@ -673,6 +683,14 @@ pub(crate) fn run_browser(
                             browser_clear_preview(&mut out)?;
                         }
                         true
+                    }
+                    (KeyCode::Char('e'), _) => {
+                        if let Some(BrowserEntry::File(name)) = state.entries.get(state.cursor).cloned() {
+                            state.doc_path = Some(state.current_dir.join(&name));
+                            open_in_editor = true;
+                            continue;
+                        }
+                        false
                     }
                     (KeyCode::Char('h'), _) => {
                         let help_img = render_help_overlay_with(
