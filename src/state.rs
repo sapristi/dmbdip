@@ -144,13 +144,6 @@ impl AppState {
         Some((cursor_x, heading.y_pos, heading.heading_height, c))
     }
 
-    pub(crate) fn next_frame(&mut self) -> (u32, u32) {
-        let new_id = self.frame;
-        let old_id = if self.frame == 1 { 2 } else { 1 };
-        self.frame = old_id;
-        (new_id, old_id)
-    }
-
     pub(crate) fn scroll(&mut self, delta: i32) -> bool {
         let max = self.max_scroll();
         let new_y = if delta > 0 {

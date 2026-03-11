@@ -10,7 +10,9 @@ pub(crate) const BLOCK_INDENT: u32 = 24;
 
 pub(crate) const KEYBINDINGS: &[(&str, &str)] = &[
     ("Up / Down", "Navigate between headings"),
-    ("Right / Tab", "Toggle fold open/close"),
+    ("Tab", "Toggle fold open/close"),
+    ("Right", "Hide file list (full-width)"),
+    ("Left", "Show file list / back to browser"),
     ("Space", "Scroll down"),
     ("Ctrl+Space", "Scroll up"),
     ("j / k", "Small scroll steps"),
@@ -19,13 +21,13 @@ pub(crate) const KEYBINDINGS: &[(&str, &str)] = &[
     ("/", "Search text"),
     ("n / N", "Next/previous search match"),
     ("h", "Show this help"),
-    ("q / Esc", "Quit"),
+    ("q / Esc / Ctrl-C", "Quit"),
 ];
 
 pub(crate) const BROWSER_KEYBINDINGS: &[(&str, &str)] = &[
-    ("Up / Down", "Move cursor"),
+    ("Up / Down, j / k", "Move cursor"),
     ("Right / Enter", "Open file or enter directory"),
     ("Left", "Go to parent directory"),
     ("h", "Show this help"),
-    ("q / Esc", "Quit"),
+    ("q / Esc / Ctrl-C", "Quit"),
 ];

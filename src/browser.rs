@@ -103,6 +103,7 @@ struct BrowserState {
     preview_cache: PreviewCache,
     preview_frame: u32,
     position_cache: HashMap<PathBuf, SavedPosition>,
+    file_list_visible: bool,
 }
 
 const BROWSER_LEFT_COLS: u16 = 35;
@@ -236,11 +237,28 @@ fn show_preview(
     Ok(())
 }
 
-pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u32) -> io::Result<()> {
+fn doc_width(vp_width: u32, file_list_visible: bool) -> u32 {
+    if file_list_visible {
+        vp_width.saturating_sub(BROWSER_LEFT_COLS as u32 * 8)
+    } else {
+        vp_width
+    }
+}
+
+pub(crate) fn run_browser(
+    dir: &Path,
+    initial_file: Option<&Path>,
+    fonts: &Fonts,
+    vp_width: u32,
+    vp_height: u32,
+) -> io::Result<()> {
     let (_term_cols, term_rows) = terminal::size()?;
+    let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let entries = scan_directory(&canonical_dir);
+
     let mut state = BrowserState {
-        current_dir: dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
-        entries: scan_directory(dir),
+        current_dir: canonical_dir,
+        entries,
         cursor: 0,
         doc_state: None,
         doc_mode: false,
@@ -248,7 +266,28 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
         preview_cache: PreviewCache::new(8),
         preview_frame: 1,
         position_cache: HashMap::new(),
+        file_list_visible: initial_file.is_none(),
     };
+
+    // If an initial file was given, open it directly
+    if let Some(file_path) = initial_file {
+        let file_path = file_path.canonicalize().unwrap_or_else(|_| file_path.to_path_buf());
+        let file_name = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        // Position cursor on the file in the entry list
+        if let Some(idx) = state.entries.iter().position(|e| match e {
+            BrowserEntry::File(name) => name == &file_name,
+            _ => false,
+        }) {
+            state.cursor = idx;
+        }
+        if let Ok(source) = std::fs::read_to_string(&file_path) {
+            let w = doc_width(vp_width, state.file_list_visible);
+            let ds = AppState::new(&source, fonts, w, vp_height);
+            state.doc_state = Some(ds);
+            state.doc_mode = true;
+            state.doc_path = Some(file_path);
+        }
+    }
 
     let stdout = io::stdout();
     terminal::enable_raw_mode()?;
@@ -261,8 +300,33 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
             cursor::Hide,
             terminal::Clear(ClearType::All)
         )?;
-        draw_file_list(&mut out, &state, term_rows)?;
-        show_preview(&mut out, &mut state, fonts, preview_width, vp_height)?;
+        if state.doc_mode {
+            if let Some(ref ds) = state.doc_state {
+                let w = doc_width(vp_width, state.file_list_visible);
+                let ci = ds.cursor_info();
+                let mut frame = ds.frame;
+                display_viewport(
+                    &mut out,
+                    &ds.img,
+                    ds.scroll_y,
+                    w,
+                    vp_height,
+                    &mut frame,
+                    None,
+                    None,
+                    ci,
+                    &ds.search_highlights,
+                    ds.search_current,
+                )?;
+                // Update frame in doc_state
+                if let Some(ref mut ds) = state.doc_state {
+                    ds.frame = frame;
+                }
+            }
+        } else {
+            draw_file_list(&mut out, &state, term_rows)?;
+            show_preview(&mut out, &mut state, fonts, preview_width, vp_height)?;
+        }
     }
 
     loop {
@@ -275,7 +339,14 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
         {
             if state.doc_mode {
                 if let Some(ref mut ds) = state.doc_state {
-                    let needs_preview_redraw = if ds.search_mode {
+                    let cur_width = doc_width(vp_width, state.file_list_visible);
+                    let col = if state.file_list_visible {
+                        Some(BROWSER_LEFT_COLS + 1)
+                    } else {
+                        None
+                    };
+
+                    let needs_redraw = if ds.search_mode {
                         match (code, modifiers) {
                             (KeyCode::Esc, _) => {
                                 ds.search_mode = false;
@@ -301,21 +372,10 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                         }
                     } else {
                         match (code, modifiers) {
-                            (KeyCode::Char('q'), _) => break,
-                            (KeyCode::Esc, _) => {
-                                if let (Some(ds), Some(path)) = (&state.doc_state, &state.doc_path) {
-                                    state.position_cache.insert(path.clone(), SavedPosition {
-                                        scroll_y: ds.scroll_y,
-                                        current_heading: ds.current_heading,
-                                        folded: ds.headings.iter().map(|h| h.folded).collect(),
-                                    });
-                                }
-                                state.doc_mode = false;
-                                let mut out = BufWriter::new(stdout.lock());
-                                browser_clear_preview(&mut out)?;
-                                draw_file_list(&mut out, &state, term_rows)?;
-                                continue;
-                            }
+                            (KeyCode::Char('q'), _)
+                            | (KeyCode::Esc, _)
+                            | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+
                             (KeyCode::Char('/'), KeyModifiers::NONE) => {
                                 ds.search_mode = true;
                                 ds.search_query.clear();
@@ -328,6 +388,40 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                             (KeyCode::Char('N'), KeyModifiers::SHIFT) => ds.navigate_search(false),
                             (KeyCode::Down, KeyModifiers::NONE) => ds.navigate_heading(1),
                             (KeyCode::Up, KeyModifiers::NONE) => ds.navigate_heading(-1),
+
+                            (KeyCode::Tab, _) => ds.toggle_fold(fonts),
+
+                            (KeyCode::Right, KeyModifiers::NONE) => {
+                                if state.file_list_visible {
+                                    state.file_list_visible = false;
+                                    let new_width = doc_width(vp_width, false);
+                                    ds.vp_width = new_width;
+                                    ds.rerender(fonts);
+                                    if !ds.search_query.is_empty() && !ds.search_matches.is_empty() {
+                                        ds.execute_search(fonts);
+                                    }
+                                    let mut out = BufWriter::new(stdout.lock());
+                                    execute!(out, terminal::Clear(ClearType::All))?;
+                                    let ci = ds.cursor_info();
+                                    display_viewport(
+                                        &mut out,
+                                        &ds.img,
+                                        ds.scroll_y,
+                                        new_width,
+                                        vp_height,
+                                        &mut ds.frame,
+                                        None,
+                                        None,
+                                        ci,
+                                        &ds.search_highlights,
+                                        ds.search_current,
+                                    )?;
+                                    continue;
+                                } else {
+                                    false
+                                }
+                            }
+
                             (KeyCode::Left, KeyModifiers::NONE) => {
                                 if let (Some(ds), Some(path)) = (&state.doc_state, &state.doc_path) {
                                     state.position_cache.insert(path.clone(), SavedPosition {
@@ -337,13 +431,14 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                                     });
                                 }
                                 state.doc_mode = false;
+                                state.file_list_visible = true;
                                 let mut out = BufWriter::new(stdout.lock());
                                 browser_clear_preview(&mut out)?;
                                 draw_file_list(&mut out, &state, term_rows)?;
+                                show_preview(&mut out, &mut state, fonts, preview_width, vp_height)?;
                                 continue;
                             }
-                            (KeyCode::Right, KeyModifiers::NONE)
-                            | (KeyCode::Tab, _) => ds.toggle_fold(fonts),
+
                             (KeyCode::Char(' '), KeyModifiers::NONE) => {
                                 ds.scroll(SCROLL_STEP as i32)
                             }
@@ -369,16 +464,16 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                             }
                             (KeyCode::Char('h'), KeyModifiers::NONE) => {
                                 let help_img =
-                                    render_help_overlay(preview_width, vp_height, fonts);
+                                    render_help_overlay(cur_width, vp_height, fonts);
                                 let mut out = BufWriter::new(stdout.lock());
                                 display_viewport(
                                     &mut out,
                                     &help_img,
                                     0,
-                                    preview_width,
+                                    cur_width,
                                     vp_height,
                                     &mut ds.frame,
-                                    Some(BROWSER_LEFT_COLS + 1),
+                                    col,
                                     None,
                                     None,
                                     &[],
@@ -399,19 +494,19 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                         }
                     };
 
-                    if needs_preview_redraw {
+                    if needs_redraw {
                         let overlay = if ds.search_mode {
                             Some(render_search_bar(
                                 &ds.search_query,
                                 None,
-                                preview_width,
+                                cur_width,
                                 fonts,
                             ))
                         } else if !ds.search_matches.is_empty() {
                             Some(render_search_bar(
                                 &ds.search_query,
                                 Some((ds.search_current + 1, ds.search_matches.len())),
-                                preview_width,
+                                cur_width,
                                 fonts,
                             ))
                         } else {
@@ -425,10 +520,10 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                             &mut out,
                             &ds.img,
                             ds.scroll_y,
-                            preview_width,
+                            cur_width,
                             vp_height,
                             &mut ds.frame,
-                            Some(BROWSER_LEFT_COLS + 1),
+                            col,
                             overlay.as_ref(),
                             ci,
                             hl,
@@ -437,21 +532,23 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                     }
                 }
             } else {
-                let needs_redraw = match code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Down => {
+                let needs_redraw = match (code, modifiers) {
+                    (KeyCode::Char('q'), _)
+                    | (KeyCode::Esc, _)
+                    | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                    (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
                         if state.cursor + 1 < state.entries.len() {
                             state.cursor += 1;
                         }
                         true
                     }
-                    KeyCode::Up => {
+                    (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
                         if state.cursor > 0 {
                             state.cursor -= 1;
                         }
                         true
                     }
-                    KeyCode::Right => {
+                    (KeyCode::Right, _) | (KeyCode::Enter, _) => {
                         match state.entries.get(state.cursor).cloned() {
                             Some(BrowserEntry::Dir(name)) => {
                                 let new_dir = state.current_dir.join(&name);
@@ -467,8 +564,10 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                             Some(BrowserEntry::File(name)) => {
                                 let file_path = state.current_dir.join(&name);
                                 if let Ok(source) = std::fs::read_to_string(&file_path) {
+                                    state.file_list_visible = false;
+                                    let w = doc_width(vp_width, false);
                                     let mut ds =
-                                        AppState::new(&source, fonts, preview_width, vp_height);
+                                        AppState::new(&source, fonts, w, vp_height);
                                     if let Some(saved) = state.position_cache.get(&file_path) {
                                         ds.scroll_y = saved.scroll_y;
                                         ds.current_heading = saved.current_heading;
@@ -480,16 +579,17 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                                         ds.rerender(fonts);
                                     }
                                     let mut out = BufWriter::new(stdout.lock());
+                                    execute!(out, terminal::Clear(ClearType::All))?;
                                     let ci = ds.cursor_info();
                                     let mut frame = ds.frame;
                                     display_viewport(
                                         &mut out,
                                         &ds.img,
                                         ds.scroll_y,
-                                        preview_width,
+                                        w,
                                         vp_height,
                                         &mut frame,
-                                        Some(BROWSER_LEFT_COLS + 1),
+                                        None,
                                         None,
                                         ci,
                                         &ds.search_highlights,
@@ -499,12 +599,13 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                                     state.doc_mode = true;
                                     state.doc_path = Some(file_path);
                                 }
+                                continue;
                             }
                             None => {}
                         }
                         true
                     }
-                    KeyCode::Left => {
+                    (KeyCode::Left, _) => {
                         if let Some(parent) = state.current_dir.parent() {
                             let parent = parent.to_path_buf();
                             state.entries = scan_directory(&parent);
@@ -518,7 +619,7 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                         }
                         true
                     }
-                    KeyCode::Char('h') => {
+                    (KeyCode::Char('h'), _) => {
                         let help_img = render_help_overlay_with(
                             preview_width,
                             vp_height,
@@ -547,47 +648,6 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                             }) = event::read()?
                             {
                                 break;
-                            }
-                        }
-                        true
-                    }
-                    KeyCode::Enter => {
-                        if let Some(BrowserEntry::File(name)) =
-                            state.entries.get(state.cursor).cloned()
-                        {
-                            let file_path = state.current_dir.join(&name);
-                            if let Ok(source) = std::fs::read_to_string(&file_path) {
-                                let mut ds =
-                                    AppState::new(&source, fonts, preview_width, vp_height);
-                                if let Some(saved) = state.position_cache.get(&file_path) {
-                                    ds.scroll_y = saved.scroll_y;
-                                    ds.current_heading = saved.current_heading;
-                                    for (i, &folded) in saved.folded.iter().enumerate() {
-                                        if i < ds.headings.len() {
-                                            ds.headings[i].folded = folded;
-                                        }
-                                    }
-                                    ds.rerender(fonts);
-                                }
-                                let mut out = BufWriter::new(stdout.lock());
-                                let ci = ds.cursor_info();
-                                let mut frame = ds.frame;
-                                display_viewport(
-                                    &mut out,
-                                    &ds.img,
-                                    ds.scroll_y,
-                                    preview_width,
-                                    vp_height,
-                                    &mut frame,
-                                    Some(BROWSER_LEFT_COLS + 1),
-                                    None,
-                                    ci,
-                                    &ds.search_highlights,
-                                    ds.search_current,
-                                )?;
-                                state.doc_state = Some(AppState { frame, ..ds });
-                                state.doc_mode = true;
-                                state.doc_path = Some(file_path);
                             }
                         }
                         true

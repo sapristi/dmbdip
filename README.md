@@ -11,7 +11,7 @@ dmbdip [markdown-file-or-directory]
 dmbdip --help
 ```
 
-When run without arguments or given a directory, opens a two-pane file browser: text file listing on the left, markdown preview on the right.
+When given a markdown file, opens it full-width with the file list hidden. Press Left to reveal the file list and browse sibling files. When given a directory (or no argument), opens the file browser with a file list on the left and markdown preview on the right.
 
 **Requirements:** Kitty terminal (or any terminal supporting the Kitty graphics protocol), DejaVu fonts installed.
 
@@ -43,10 +43,14 @@ cp target/release/dmbdip ~/.local/bin/
 
 ## Keybindings
 
+### Document View
+
 | Key | Action |
 |-----|--------|
 | Up/Down | Navigate between headings |
-| Right/Tab | Toggle fold open/close |
+| Tab | Toggle fold open/close |
+| Right | Hide file list (full-width reading) |
+| Left | Show file list / back to browser |
 | Space | Scroll down |
 | Ctrl+Space | Scroll up |
 | j/k | Small scroll steps |
@@ -57,16 +61,15 @@ cp target/release/dmbdip ~/.local/bin/
 | h | Show keybindings help overlay |
 | q/Esc/Ctrl-C | Quit |
 
-### File Browser Mode
+### File Browser
 
 | Key | Action |
 |-----|--------|
 | Up/Down, j/k | Move cursor |
-| Enter, Right / l | Open file / enter subfolder |
-| Left / h | Go to parent directory |
-| q/Esc | Quit |
-
-In document mode (after opening a file), Left/Esc returns to the tree.
+| Right/Enter | Open file / enter subfolder |
+| Left | Go to parent directory |
+| h | Show help |
+| q/Esc/Ctrl-C | Quit |
 
 ## Development
 
