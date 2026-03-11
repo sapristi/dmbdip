@@ -31,23 +31,25 @@ use state::AppState;
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
-    if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
+    if args.get(1).map(|s| s.as_str()) == Some("--help")
+        || args.get(1).map(|s| s.as_str()) == Some("-h")
+    {
         eprintln!("dmbdip - Display Markdown But Do it Pretty");
         eprintln!();
-        eprintln!("Usage: dmbdip <markdown-file-or-directory>");
+        eprintln!("Usage: dmbdip [markdown-file-or-directory]");
         eprintln!();
         eprintln!("Renders a markdown file as an image and displays it in the terminal");
-        eprintln!("using the Kitty graphics protocol. When given a directory, opens a");
-        eprintln!("file browser showing markdown files and subfolders.");
+        eprintln!("using the Kitty graphics protocol. When given a directory (or no");
+        eprintln!("argument), opens a file browser showing markdown files and subfolders.");
         eprintln!();
         eprintln!("Keybindings:");
         for &(key, desc) in KEYBINDINGS {
             eprintln!("  {:<20} {}", key, desc);
         }
-        std::process::exit(if args.len() < 2 { 1 } else { 0 });
+        std::process::exit(0);
     }
 
-    let file_path = &args[1];
+    let file_path = args.get(1).map(|s| s.as_str()).unwrap_or(".");
     let path = Path::new(file_path);
 
     let fonts = load_fonts();
