@@ -21,3 +21,11 @@ pub(crate) const KEYBINDINGS: &[(&str, &str)] = &[
     ("h", "Show this help"),
     ("q / Esc", "Quit"),
 ];
+
+pub(crate) const BROWSER_KEYBINDINGS: &[(&str, &str)] = &[
+    ("Up / Down", "Move cursor"),
+    ("Right / Enter", "Open file or enter directory"),
+    ("Left", "Go to parent directory"),
+    ("h", "Show this help"),
+    ("q / Esc", "Quit"),
+];

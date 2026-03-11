@@ -12,7 +12,8 @@ use crate::constants::SCROLL_STEP;
 use crate::fonts::Fonts;
 use crate::headings::build_headings;
 use crate::kitty::display_viewport;
-use crate::overlay::{render_help_overlay, render_search_bar};
+use crate::constants::BROWSER_KEYBINDINGS;
+use crate::overlay::{render_help_overlay, render_help_overlay_with, render_search_bar};
 use crate::parsing::parse_markdown;
 use crate::render::render_preview;
 use crate::state::AppState;
@@ -438,19 +439,19 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
             } else {
                 let needs_redraw = match code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Down | KeyCode::Char('j') => {
+                    KeyCode::Down => {
                         if state.cursor + 1 < state.entries.len() {
                             state.cursor += 1;
                         }
                         true
                     }
-                    KeyCode::Up | KeyCode::Char('k') => {
+                    KeyCode::Up => {
                         if state.cursor > 0 {
                             state.cursor -= 1;
                         }
                         true
                     }
-                    KeyCode::Right | KeyCode::Char('l') => {
+                    KeyCode::Right => {
                         match state.entries.get(state.cursor).cloned() {
                             Some(BrowserEntry::Dir(name)) => {
                                 let new_dir = state.current_dir.join(&name);
@@ -503,7 +504,7 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                         }
                         true
                     }
-                    KeyCode::Left | KeyCode::Char('h') => {
+                    KeyCode::Left => {
                         if let Some(parent) = state.current_dir.parent() {
                             let parent = parent.to_path_buf();
                             state.entries = scan_directory(&parent);
@@ -514,6 +515,39 @@ pub(crate) fn run_browser(dir: &Path, fonts: &Fonts, vp_width: u32, vp_height: u
                             state.position_cache.clear();
                             let mut out = BufWriter::new(stdout.lock());
                             browser_clear_preview(&mut out)?;
+                        }
+                        true
+                    }
+                    KeyCode::Char('h') => {
+                        let help_img = render_help_overlay_with(
+                            preview_width,
+                            vp_height,
+                            fonts,
+                            "Browser Keybindings",
+                            BROWSER_KEYBINDINGS,
+                        );
+                        let mut out = BufWriter::new(stdout.lock());
+                        display_viewport(
+                            &mut out,
+                            &help_img,
+                            0,
+                            preview_width,
+                            vp_height,
+                            &mut state.preview_frame,
+                            Some(BROWSER_LEFT_COLS + 1),
+                            None,
+                            None,
+                            &[],
+                            0,
+                        )?;
+                        loop {
+                            if let Event::Key(KeyEvent {
+                                kind: KeyEventKind::Press,
+                                ..
+                            }) = event::read()?
+                            {
+                                break;
+                            }
                         }
                         true
                     }

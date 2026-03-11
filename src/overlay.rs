@@ -6,6 +6,16 @@ use crate::constants::*;
 use crate::fonts::Fonts;
 
 pub(crate) fn render_help_overlay(vp_width: u32, vp_height: u32, fonts: &Fonts) -> RgbImage {
+    render_help_overlay_with(vp_width, vp_height, fonts, "Keybindings", KEYBINDINGS)
+}
+
+pub(crate) fn render_help_overlay_with(
+    vp_width: u32,
+    vp_height: u32,
+    fonts: &Fonts,
+    title: &str,
+    bindings: &[(&str, &str)],
+) -> RgbImage {
     let mut img = RgbImage::from_pixel(vp_width, vp_height, Rgb([30, 30, 40]));
     let content_width = (vp_width - MARGIN_LEFT - MARGIN_RIGHT).min(MAX_CONTENT_WIDTH);
     let margin_left = (vp_width - content_width) / 2;
@@ -22,12 +32,12 @@ pub(crate) fn render_help_overlay(vp_width: u32, vp_height: u32, fonts: &Fonts) 
         y,
         title_scale,
         &fonts.bold,
-        "Keybindings",
+        title,
     );
     y += 50;
 
     let indent_x = x + BLOCK_INDENT as i32;
-    for &(key, desc) in KEYBINDINGS {
+    for &(key, desc) in bindings {
         draw_text_mut(
             &mut img,
             Rgb([230, 180, 80]),
