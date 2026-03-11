@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            runner: macos-13
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fonts-dejavu
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package binary
+        run: |
+          cd target/release
+          tar czf ../../dmbdip-${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz dmbdip
+          cd ../..
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dmbdip-${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz

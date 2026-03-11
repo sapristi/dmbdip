@@ -24,6 +24,9 @@ pub(crate) fn load_fonts() -> Fonts {
             &[
                 "/usr/share/fonts/TTF/DejaVuSans.ttf",
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/opt/homebrew/share/fonts/dejavu/DejaVuSans.ttf",
+                "/usr/local/share/fonts/dejavu/DejaVuSans.ttf",
+                "/Library/Fonts/DejaVuSans.ttf",
             ],
             "DejaVu Sans",
         ),
@@ -31,6 +34,9 @@ pub(crate) fn load_fonts() -> Fonts {
             &[
                 "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/opt/homebrew/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/local/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+                "/Library/Fonts/DejaVuSans-Bold.ttf",
             ],
             "DejaVu Sans Bold",
         ),
@@ -38,6 +44,9 @@ pub(crate) fn load_fonts() -> Fonts {
             &[
                 "/usr/share/fonts/TTF/DejaVuSans-Oblique.ttf",
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+                "/opt/homebrew/share/fonts/dejavu/DejaVuSans-Oblique.ttf",
+                "/usr/local/share/fonts/dejavu/DejaVuSans-Oblique.ttf",
+                "/Library/Fonts/DejaVuSans-Oblique.ttf",
             ],
             "DejaVu Sans Oblique",
         ),
@@ -45,6 +54,9 @@ pub(crate) fn load_fonts() -> Fonts {
             &[
                 "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
                 "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                "/opt/homebrew/share/fonts/dejavu/DejaVuSansMono.ttf",
+                "/usr/local/share/fonts/dejavu/DejaVuSansMono.ttf",
+                "/Library/Fonts/DejaVuSansMono.ttf",
             ],
             "DejaVu Sans Mono",
         ),

@@ -15,7 +15,19 @@ When run without arguments or given a directory, opens a two-pane file browser: 
 
 **Requirements:** Kitty terminal (or any terminal supporting the Kitty graphics protocol), DejaVu fonts installed.
 
-## Building
+## Installation
+
+### Pre-built binaries
+
+Download pre-built binaries for Linux (x86_64) and macOS (x86_64, Apple Silicon) from the [GitHub Releases](https://github.com/sapristi/dmbdip/releases) page.
+
+On macOS, you'll need DejaVu fonts installed:
+
+```
+brew install font-dejavu
+```
+
+### Building from source
 
 Requires Rust (1.85+ for edition 2024). Install via [rustup](https://rustup.rs/).
 
