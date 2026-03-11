@@ -245,6 +245,14 @@ fn doc_width(vp_width: u32, file_list_visible: bool) -> u32 {
     }
 }
 
+fn doc_col(file_list_visible: bool) -> Option<u16> {
+    if file_list_visible {
+        Some(BROWSER_LEFT_COLS + 1)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn run_browser(
     dir: &Path,
     initial_file: Option<&Path>,
@@ -312,7 +320,7 @@ pub(crate) fn run_browser(
                     w,
                     vp_height,
                     &mut frame,
-                    None,
+                    doc_col(state.file_list_visible),
                     None,
                     ci,
                     &ds.search_highlights,
@@ -340,11 +348,7 @@ pub(crate) fn run_browser(
             if state.doc_mode {
                 if let Some(ref mut ds) = state.doc_state {
                     let cur_width = doc_width(vp_width, state.file_list_visible);
-                    let col = if state.file_list_visible {
-                        Some(BROWSER_LEFT_COLS + 1)
-                    } else {
-                        None
-                    };
+                    let col = doc_col(state.file_list_visible);
 
                     let needs_redraw = if ds.search_mode {
                         match (code, modifiers) {
@@ -410,7 +414,7 @@ pub(crate) fn run_browser(
                                         new_width,
                                         vp_height,
                                         &mut ds.frame,
-                                        None,
+                                        doc_col(false),
                                         None,
                                         ci,
                                         &ds.search_highlights,
@@ -589,7 +593,7 @@ pub(crate) fn run_browser(
                                         w,
                                         vp_height,
                                         &mut frame,
-                                        None,
+                                        doc_col(false),
                                         None,
                                         ci,
                                         &ds.search_highlights,

@@ -1,5 +1,5 @@
 pub(crate) const SCROLL_STEP: u32 = 40;
-pub(crate) const MARGIN_LEFT: u32 = 20;
+pub(crate) const MARGIN_LEFT: u32 = 50;
 pub(crate) const MARGIN_RIGHT: u32 = 20;
 pub(crate) const PARAGRAPH_GAP: u32 = 16;
 pub(crate) const CURSOR_WIDTH: u32 = 4;
