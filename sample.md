@@ -42,11 +42,41 @@ fn main() {
 
 Some more text after the table to verify that layout continues correctly after table rendering.
 
-### Nested Heading
+### Bullet Lists
 
-- This is a list item (rendered as plain text for now)
-- Another item with **bold** and *italic*
+- First item
+- Second item with **bold** and *italic*
 - Third item with `code`
+  - Nested item one
+  - Nested item two with **emphasis**
+    - Deeply nested item
+    - Another deep item with `inline code`
+  - Nested item three
+- Fourth item back at top level
+
+### Numbered Lists
+
+1. First step
+2. Second step with **important** details
+3. Third step with `code_example`
+   1. Sub-step one
+   2. Sub-step two with *italic text*
+      1. Deep sub-step
+      2. Another deep sub-step
+   3. Sub-step three
+4. Fourth step back at top level
+
+### Mixed Lists
+
+- Bullet item one
+  1. Numbered sub-item
+  2. Another numbered sub-item
+- Bullet item two
+  - Nested bullet
+    1. Deep numbered item
+    2. Another deep numbered item
+  - Another nested bullet
+- Bullet item three
 
 ## Final Section
 
