@@ -2,7 +2,7 @@
 
 ## Overview
 
-Add a TOML configuration file at `~/.config/dmbdip/dmbdip.conf` that allows users to customize theme colors, font sizes, layout parameters, and font paths. All fields are optional — missing fields fall back to current hardcoded defaults.
+Add a TOML configuration file at `$XDG_CONFIG_HOME/dmbdip/dmbdip.toml` (defaulting to `~/.config/dmbdip/dmbdip.toml`) that allows users to customize theme colors, font sizes, layout parameters, and font paths. All fields are optional — missing fields fall back to current hardcoded defaults.
 
 ## Config File Format
 
@@ -47,6 +47,16 @@ mono = "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
 
 Colors are 6-digit hex strings. Both `"1e1e28"` and `"#1e1e28"` are accepted. Invalid color strings cause the app to print a warning to stderr and fall back to the default value.
 
+## Layout Value Validation
+
+Layout values are clamped to reasonable ranges to prevent panics:
+- `margin_left`, `margin_right`: min 0, max 200
+- `paragraph_gap`, `h1_extra_margin`, `block_indent`: min 0, max 200
+- `max_content_width`: min 100, max 4000
+- `scroll_step`: min 1, max 500
+- `cursor_width`: min 1, max 20
+- `cursor_margin`: min 0, max 50
+
 ## Architecture
 
 ### New module: `src/config.rs`
@@ -57,7 +67,7 @@ Defines:
 - `ThemeConfig` — all `Option<String>` for colors, `Option<f32>` for sizes
 - `LayoutConfig` — all `Option<u32>` fields
 - `FontsConfig` — all `Option<String>` paths
-- `load_config() -> Config` — reads `~/.config/dmbdip/dmbdip.conf`, returns empty Config if file missing
+- `load_config() -> Config` — reads config from `$XDG_CONFIG_HOME/dmbdip/dmbdip.toml` (falling back to `~/.config/dmbdip/dmbdip.toml`), returns empty Config if file missing
 - `parse_hex_color(s: &str) -> Option<Rgb<u8>>` — strips optional `#`, parses 6 hex digits
 
 All config structs derive `serde::Deserialize` with `#[serde(default)]`.
@@ -80,10 +90,11 @@ All config structs derive `serde::Deserialize` with `#[serde(default)]`.
 **`src/state.rs`**:
 - `AppState` gains a `layout: LayoutParams` field
 - All references to layout constants (MARGIN_LEFT, PARAGRAPH_GAP, etc.) use `self.layout.*` instead
+- `compute_block_highlights` updated to use `LayoutParams` instead of constants
 
 **`src/render.rs`**:
-- Rendering functions receive `&LayoutParams` instead of importing constants
-- Both `render_markdown` and `render_preview` updated
+- `render_markdown` and `render_preview` accept `&Theme` and `&LayoutParams` as parameters instead of constructing theme internally or importing constants
+- `compute_total_height` and all sub-rendering functions updated similarly
 
 **`src/main.rs`**:
 - Calls `load_config()` at startup before loading fonts
@@ -106,4 +117,7 @@ All config structs derive `serde::Deserialize` with `#[serde(default)]`.
 - Keybindings remain hardcoded
 - Rendering logic/algorithms unchanged
 - Kitty protocol code unchanged
-- Browser mode unchanged (uses same theme/layout)
+- Browser mode uses same theme/layout (passed through)
+- Overlay colors (help, search bar) stay hardcoded — separate concern for later
+- Line height multipliers (1.3, 1.4, 1.5), code block padding, table cell padding — intentionally not configurable
+- Browser sidebar width (`BROWSER_LEFT_COLS`) — not configurable
