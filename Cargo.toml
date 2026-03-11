@@ -8,7 +8,7 @@ repository = "https://github.com/sapristi/dmbdip"
 readme = "README.md"
 keywords = ["markdown", "terminal", "kitty", "viewer", "tui"]
 categories = ["command-line-utilities", "visualization"]
-exclude = ["assets/", "docs/"]
+exclude = ["assets/", "docs/", "DEVELOPMENT.md", "CLAUDE.md", "sample.md", ".github/", ".gitignore"]
 
 [dependencies]
 image = "0.25"
