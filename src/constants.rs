@@ -20,6 +20,7 @@ pub(crate) const KEYBINDINGS: &[(&str, &str)] = &[
     ("Home / End", "Jump to top/bottom"),
     ("/", "Search text"),
     ("n / N", "Next/previous search match"),
+    ("e", "Open in $EDITOR"),
     ("h", "Show this help"),
     ("q / Esc / Ctrl-C", "Quit"),
 ];

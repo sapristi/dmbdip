@@ -340,7 +340,48 @@ pub(crate) fn run_browser(
         }
     }
 
+    let mut open_in_editor = false;
     loop {
+        if open_in_editor {
+            open_in_editor = false;
+            if let Some(ref path) = state.doc_path {
+                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                terminal::disable_raw_mode()?;
+                {
+                    let mut out = BufWriter::new(stdout.lock());
+                    execute!(out, terminal::LeaveAlternateScreen, cursor::Show)?;
+                }
+                let _status = std::process::Command::new(&editor)
+                    .arg(path)
+                    .status();
+                {
+                    let mut out = BufWriter::new(stdout.lock());
+                    execute!(out, terminal::EnterAlternateScreen, cursor::Hide)?;
+                }
+                terminal::enable_raw_mode()?;
+                // Reload the file in case it was edited
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    let cur_w = doc_width(vp_width, state.file_list_visible);
+                    let new_ds = AppState::new(&content, fonts, cur_w, vp_height);
+                    state.doc_state = Some(new_ds);
+                    state.preview_cache.entries.retain(|(p, _)| p != path);
+                }
+                // Redraw
+                if let Some(ref mut ds) = state.doc_state {
+                    let cur_w = doc_width(vp_width, state.file_list_visible);
+                    let col = doc_col(state.file_list_visible);
+                    let ci = ds.cursor_info();
+                    let mut out = BufWriter::new(stdout.lock());
+                    execute!(out, terminal::Clear(ClearType::All))?;
+                    display_viewport(
+                        &mut out, &ds.img, ds.scroll_y, cur_w, vp_height,
+                        &mut ds.frame, col, None, ci, &ds.search_highlights, ds.search_current,
+                    )?;
+                }
+            }
+            continue;
+        }
+
         if let Event::Key(KeyEvent {
             code,
             modifiers,
@@ -496,6 +537,13 @@ pub(crate) fn run_browser(
                                     }
                                 }
                                 true
+                            }
+                            (KeyCode::Char('e'), KeyModifiers::NONE) => {
+                                if state.doc_path.is_some() {
+                                    open_in_editor = true;
+                                    continue;
+                                }
+                                false
                             }
                             _ => false,
                         }
