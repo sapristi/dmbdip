@@ -57,5 +57,5 @@ Body text.
 
 #[cfg(test)]
 pub(crate) fn test_fonts() -> crate::fonts::Fonts {
-    crate::fonts::load_fonts()
+    crate::fonts::load_fonts(None)
 }

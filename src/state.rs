@@ -2,13 +2,13 @@ use ab_glyph::{FontVec, PxScale};
 use image::RgbImage;
 use imageproc::drawing::text_size;
 
-use crate::constants::*;
+use crate::constants::{LayoutParams, LIST_INDENT_PER_LEVEL};
 use crate::fonts::Fonts;
 use crate::headings::{build_headings, is_block_folded};
 use crate::parsing::parse_markdown;
 use crate::render::{heading_style, render_markdown, wrap_code_lines, wrap_heading_text};
 use crate::text::{spans_to_plain, wrap_spans};
-use crate::theme::{default_theme, Theme};
+use crate::theme::Theme;
 use crate::types::{Block, HeadingInfo, ListMarker};
 
 pub(crate) struct AppState {
@@ -23,6 +23,7 @@ pub(crate) struct AppState {
     pub(crate) block_y_positions: Vec<(usize, u32)>,
     pub(crate) margin_left: u32,
     pub(crate) theme: Theme,
+    pub(crate) layout: LayoutParams,
     pub(crate) search_mode: bool,
     pub(crate) search_query: String,
     pub(crate) search_matches: Vec<usize>,
@@ -31,7 +32,14 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    pub(crate) fn new(source: &str, fonts: &Fonts, vp_width: u32, vp_height: u32) -> Self {
+    pub(crate) fn new(
+        source: &str,
+        fonts: &Fonts,
+        vp_width: u32,
+        vp_height: u32,
+        theme: Theme,
+        layout: LayoutParams,
+    ) -> Self {
         let blocks = parse_markdown(source);
         let headings = build_headings(&blocks);
         let current_heading = if headings.is_empty() { None } else { Some(0) };
@@ -47,7 +55,8 @@ impl AppState {
             img: RgbImage::new(1, 1),
             block_y_positions: Vec::new(),
             margin_left: 0,
-            theme: default_theme(),
+            theme,
+            layout,
             search_mode: false,
             search_query: String::new(),
             search_matches: Vec::new(),
@@ -65,6 +74,8 @@ impl AppState {
             self.vp_width,
             self.vp_height,
             fonts,
+            &self.theme,
+            &self.layout,
         );
         self.img = img;
         self.block_y_positions = positions;
@@ -139,7 +150,7 @@ impl AppState {
         let heading = &self.headings[hi];
         let (size, _) = heading_style(&heading.level, &self.theme);
         let arrow_space = (size * 0.5) as u32 + 4;
-        let cursor_x = self.margin_left.saturating_sub(arrow_space + CURSOR_MARGIN + CURSOR_WIDTH);
+        let cursor_x = self.margin_left.saturating_sub(arrow_space + self.layout.cursor_margin + self.layout.cursor_width);
         let c = self.theme.cursor_color.0;
         Some((cursor_x, heading.y_pos, heading.heading_height, c))
     }
@@ -204,7 +215,7 @@ impl AppState {
             let highlights = compute_block_highlights(
                 block, block_y, &query, fonts, &self.theme,
                 content_width, self.margin_left, match_idx,
-                &self.headings, bi,
+                &self.headings, bi, &self.layout,
             );
             self.search_highlights.extend(highlights);
             match_idx += 1;
@@ -305,15 +316,16 @@ fn compute_block_highlights(
     match_idx: usize,
     headings: &[HeadingInfo],
     block_index: usize,
+    layout: &LayoutParams,
 ) -> Vec<(u32, u32, u32, u32, usize)> {
     let mut highlights = Vec::new();
     match block {
         Block::Paragraph { spans } => {
             let scale = PxScale::from(theme.body_size);
-            let indented_width = content_width - BLOCK_INDENT;
+            let indented_width = content_width - layout.block_indent;
             let lines = wrap_spans(spans, fonts, scale, indented_width);
             let line_height = (theme.body_size * 1.4) as u32;
-            let x_start = margin_left + BLOCK_INDENT;
+            let x_start = margin_left + layout.block_indent;
             let mut y = block_y;
             for line in &lines {
                 let plain = spans_to_plain(line);
@@ -344,11 +356,11 @@ fn compute_block_highlights(
         }
         Block::CodeBlock { text } => {
             let scale = PxScale::from(theme.body_size);
-            let indented_width = content_width - BLOCK_INDENT;
+            let indented_width = content_width - layout.block_indent;
             let pad = 10u32;
             let inner_width = indented_width - pad * 2;
             let line_height = (theme.body_size * 1.4) as u32;
-            let x_start = margin_left + BLOCK_INDENT + pad;
+            let x_start = margin_left + layout.block_indent + pad;
             let mut y = block_y + pad;
             for wrapped in &wrap_code_lines(text, fonts, scale, inner_width) {
                 for line in wrapped {
@@ -366,7 +378,7 @@ fn compute_block_highlights(
             let line_height = (theme.body_size * 1.4) as u32;
             let mut y = block_y;
             for item in items {
-                let indent = BLOCK_INDENT + item.depth * LIST_INDENT_PER_LEVEL;
+                let indent = layout.block_indent + item.depth * LIST_INDENT_PER_LEVEL;
                 let mt = match &item.marker {
                     ListMarker::Bullet => "\u{2022}  ".to_string(),
                     ListMarker::Ordered(n) => format!("{}. ", n),
@@ -397,11 +409,16 @@ fn compute_block_highlights(
 mod tests {
     use super::*;
     use crate::test_helpers::{test_fonts, SAMPLE_MD};
+    use crate::theme::default_theme;
+
+    fn new_state(source: &str, fonts: &Fonts, w: u32, h: u32) -> AppState {
+        AppState::new(source, fonts, w, h, default_theme(), LayoutParams::default())
+    }
 
     #[test]
     fn app_state_navigation() {
         let fonts = test_fonts();
-        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let mut state = new_state(SAMPLE_MD, &fonts, 800, 600);
 
         assert_eq!(state.current_heading, Some(0));
         assert!(state.navigate_heading(1));
@@ -415,7 +432,7 @@ mod tests {
     #[test]
     fn app_state_navigation_bounds() {
         let fonts = test_fonts();
-        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let mut state = new_state(SAMPLE_MD, &fonts, 800, 600);
 
         assert!(!state.navigate_heading(-1));
         assert_eq!(state.current_heading, Some(0));
@@ -429,7 +446,7 @@ mod tests {
     #[test]
     fn app_state_fold_toggle() {
         let fonts = test_fonts();
-        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let mut state = new_state(SAMPLE_MD, &fonts, 800, 600);
         let h_before = state.img.height();
 
         state.toggle_fold(&fonts);
@@ -444,7 +461,7 @@ mod tests {
     #[test]
     fn app_state_scroll() {
         let fonts = test_fonts();
-        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 200);
+        let mut state = new_state(SAMPLE_MD, &fonts, 800, 200);
 
         assert_eq!(state.scroll_y, 0);
         assert!(state.scroll(100));
@@ -457,7 +474,7 @@ mod tests {
     #[test]
     fn app_state_cursor_info() {
         let fonts = test_fonts();
-        let state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let state = new_state(SAMPLE_MD, &fonts, 800, 600);
         let ci = state.cursor_info();
         assert!(ci.is_some());
         let (x, y, h, color) = ci.unwrap();
@@ -470,7 +487,7 @@ mod tests {
     #[test]
     fn search_finds_text() {
         let fonts = test_fonts();
-        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let mut state = new_state(SAMPLE_MD, &fonts, 800, 600);
 
         state.search_query = "bold".to_string();
         state.execute_search(&fonts);
@@ -481,7 +498,7 @@ mod tests {
     #[test]
     fn search_case_insensitive() {
         let fonts = test_fonts();
-        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let mut state = new_state(SAMPLE_MD, &fonts, 800, 600);
 
         state.search_query = "HELLO".to_string();
         state.execute_search(&fonts);
@@ -491,7 +508,7 @@ mod tests {
     #[test]
     fn search_no_match() {
         let fonts = test_fonts();
-        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let mut state = new_state(SAMPLE_MD, &fonts, 800, 600);
 
         state.search_query = "zzzznonexistent".to_string();
         state.execute_search(&fonts);
@@ -502,7 +519,7 @@ mod tests {
     #[test]
     fn search_navigation_wraps() {
         let fonts = test_fonts();
-        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let mut state = new_state(SAMPLE_MD, &fonts, 800, 600);
 
         state.search_query = "section".to_string();
         state.execute_search(&fonts);
@@ -519,7 +536,7 @@ mod tests {
     #[test]
     fn search_in_code_block() {
         let fonts = test_fonts();
-        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let mut state = new_state(SAMPLE_MD, &fonts, 800, 600);
 
         state.search_query = "println".to_string();
         state.execute_search(&fonts);
@@ -530,7 +547,7 @@ mod tests {
     fn search_in_table() {
         let fonts = test_fonts();
         let md = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n";
-        let mut state = AppState::new(md, &fonts, 800, 600);
+        let mut state = new_state(md, &fonts, 800, 600);
 
         state.search_query = "alice".to_string();
         state.execute_search(&fonts);
@@ -541,7 +558,7 @@ mod tests {
     fn navigation_skips_folded_headings() {
         let fonts = test_fonts();
         let md = "# Top\n## A\n### A.1\n## B\n";
-        let mut state = AppState::new(md, &fonts, 800, 600);
+        let mut state = new_state(md, &fonts, 800, 600);
 
         state.current_heading = Some(1);
         state.toggle_fold(&fonts);
@@ -553,7 +570,7 @@ mod tests {
     #[test]
     fn empty_document() {
         let fonts = test_fonts();
-        let state = AppState::new("", &fonts, 800, 600);
+        let state = new_state("", &fonts, 800, 600);
         assert!(state.headings.is_empty());
         assert!(state.current_heading.is_none());
         assert!(state.img.height() > 0);
@@ -563,7 +580,7 @@ mod tests {
     fn headings_only() {
         let fonts = test_fonts();
         let md = "# One\n## Two\n## Three\n";
-        let state = AppState::new(md, &fonts, 800, 600);
+        let state = new_state(md, &fonts, 800, 600);
         assert_eq!(state.headings.len(), 3);
     }
 }

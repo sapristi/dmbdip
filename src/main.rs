@@ -1,4 +1,5 @@
 mod browser;
+mod config;
 mod constants;
 mod fonts;
 mod headings;
@@ -17,7 +18,8 @@ mod test_helpers;
 use std::io;
 use std::path::Path;
 
-use constants::*;
+use config::{build_theme, load_config};
+use constants::{LayoutParams, KEYBINDINGS, BROWSER_KEYBINDINGS};
 use fonts::load_fonts;
 use kitty::get_viewport_pixel_size;
 
@@ -51,17 +53,20 @@ fn main() -> io::Result<()> {
     let file_path = args.get(1).map(|s| s.as_str()).unwrap_or(".");
     let path = Path::new(file_path);
 
-    let fonts = load_fonts();
+    let config = load_config();
+    let theme = build_theme(&config.theme);
+    let layout = LayoutParams::from_config(&config.layout);
+    let fonts = load_fonts(Some(&config.fonts));
     let (vp_width, vp_height) = get_viewport_pixel_size()?;
 
     if path.is_dir() {
-        browser::run_browser(path, None, &fonts, vp_width, vp_height)
+        browser::run_browser(path, None, &fonts, vp_width, vp_height, &theme, &layout)
     } else {
         let dir = match path.parent() {
             Some(p) if p.as_os_str().is_empty() => Path::new("."),
             Some(p) => p,
             None => Path::new("."),
         };
-        browser::run_browser(dir, Some(path), &fonts, vp_width, vp_height)
+        browser::run_browser(dir, Some(path), &fonts, vp_width, vp_height, &theme, &layout)
     }
 }

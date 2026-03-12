@@ -4,7 +4,7 @@ use imageproc::drawing::{draw_filled_rect_mut, draw_line_segment_mut, draw_text_
 use imageproc::rect::Rect;
 use pulldown_cmark::HeadingLevel;
 
-use crate::constants::*;
+use crate::constants::{LayoutParams, LIST_INDENT_PER_LEVEL};
 use crate::fonts::Fonts;
 use crate::headings::is_block_folded;
 use crate::text::{draw_spans, spans_to_plain, wrap_spans};
@@ -19,13 +19,14 @@ pub(crate) fn render_preview(
     width: u32,
     max_height: u32,
     fonts: &Fonts,
+    theme: &Theme,
+    layout: &LayoutParams,
 ) -> RgbImage {
-    let theme = crate::theme::default_theme();
-    let content_width = (width - PREVIEW_MARGIN * 2).min(MAX_CONTENT_WIDTH);
+    let content_width = (width - PREVIEW_MARGIN * 2).min(layout.max_content_width);
     let margin_left = PREVIEW_MARGIN;
 
     let mut img = RgbImage::from_pixel(width, max_height, theme.bg);
-    let mut y: u32 = PARAGRAPH_GAP;
+    let mut y: u32 = layout.paragraph_gap;
     let mut heading_idx: usize = 0;
 
     for (_bi, block) in blocks.iter().enumerate() {
@@ -35,12 +36,12 @@ pub(crate) fn render_preview(
 
         match block {
             Block::Metadata { entries } => {
-                y = render_metadata(&mut img, entries, fonts, &theme, y, margin_left + BLOCK_INDENT);
-                y += PARAGRAPH_GAP * 2;
+                y = render_metadata(&mut img, entries, fonts, theme, y, margin_left + layout.block_indent);
+                y += layout.paragraph_gap * 2;
             }
             Block::Heading { level, spans } => {
                 if matches!(level, HeadingLevel::H1) {
-                    y += H1_EXTRA_MARGIN;
+                    y += layout.h1_extra_margin;
                 }
 
                 let hi = heading_idx;
@@ -50,9 +51,9 @@ pub(crate) fn render_preview(
                 }
 
                 let (lines, size, line_height) = wrap_heading_text(
-                    &headings[hi], spans, fonts, &theme, content_width,
+                    &headings[hi], spans, fonts, theme, content_width,
                 );
-                let (_, color) = heading_style(level, &theme);
+                let (_, color) = heading_style(level, theme);
                 let scale = PxScale::from(size);
 
                 for line in &lines {
@@ -72,11 +73,11 @@ pub(crate) fn render_preview(
                     }
                     y += line_height;
                 }
-                y += PARAGRAPH_GAP;
+                y += layout.paragraph_gap;
             }
             Block::Paragraph { spans } => {
                 let scale = PxScale::from(theme.body_size);
-                let indented_width = content_width - BLOCK_INDENT;
+                let indented_width = content_width - layout.block_indent;
                 let lines = wrap_spans(spans, fonts, scale, indented_width);
                 let line_height = (theme.body_size * 1.4) as u32;
 
@@ -84,22 +85,22 @@ pub(crate) fn render_preview(
                     if y >= max_height {
                         break;
                     }
-                    draw_spans(&mut img, line, margin_left + BLOCK_INDENT, y, scale, fonts, &theme);
+                    draw_spans(&mut img, line, margin_left + layout.block_indent, y, scale, fonts, theme);
                     y += line_height;
                 }
-                y += PARAGRAPH_GAP;
+                y += layout.paragraph_gap;
             }
             Block::CodeBlock { text } => {
-                y = render_code_block(&mut img, text, fonts, &theme, y, content_width - BLOCK_INDENT, margin_left + BLOCK_INDENT);
-                y += PARAGRAPH_GAP;
+                y = render_code_block(&mut img, text, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
+                y += layout.paragraph_gap;
             }
             Block::Table { headers, rows } => {
-                y = render_table(&mut img, headers, rows, fonts, &theme, y, content_width - BLOCK_INDENT, margin_left + BLOCK_INDENT);
-                y += PARAGRAPH_GAP * 2;
+                y = render_table(&mut img, headers, rows, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
+                y += layout.paragraph_gap * 2;
             }
             Block::List { items } => {
-                y = render_list(&mut img, items, fonts, &theme, y, content_width, margin_left);
-                y += PARAGRAPH_GAP;
+                y = render_list(&mut img, items, fonts, theme, y, content_width, margin_left, layout);
+                y += layout.paragraph_gap;
             }
         }
     }
@@ -113,15 +114,16 @@ pub(crate) fn render_markdown(
     width: u32,
     vp_height: u32,
     fonts: &Fonts,
+    theme: &Theme,
+    layout: &LayoutParams,
 ) -> (RgbImage, Vec<(usize, u32)>, u32) {
-    let theme = crate::theme::default_theme();
-    let content_width = (width - MARGIN_LEFT - MARGIN_RIGHT).min(MAX_CONTENT_WIDTH);
+    let content_width = (width - layout.margin_left - layout.margin_right).min(layout.max_content_width);
     let margin_left = (width - content_width) / 2;
 
-    let total_height = compute_total_height(blocks, headings, fonts, &theme, content_width, vp_height);
+    let total_height = compute_total_height(blocks, headings, fonts, theme, content_width, vp_height, layout);
 
     let mut img = RgbImage::from_pixel(width, total_height.max(1), theme.bg);
-    let mut y: u32 = PARAGRAPH_GAP;
+    let mut y: u32 = layout.paragraph_gap;
     let mut heading_idx: usize = 0;
     let mut block_positions: Vec<(usize, u32)> = Vec::new();
 
@@ -137,21 +139,21 @@ pub(crate) fn render_markdown(
 
         match block {
             Block::Metadata { entries } => {
-                y = render_metadata(&mut img, entries, fonts, &theme, y, margin_left + BLOCK_INDENT);
-                y += PARAGRAPH_GAP * 2;
+                y = render_metadata(&mut img, entries, fonts, theme, y, margin_left + layout.block_indent);
+                y += layout.paragraph_gap * 2;
             }
             Block::Heading { level, spans } => {
                 if matches!(level, HeadingLevel::H1) {
-                    y += H1_EXTRA_MARGIN;
+                    y += layout.h1_extra_margin;
                 }
 
                 let hi = heading_idx;
                 heading_idx += 1;
 
                 let (lines, size, line_height) = wrap_heading_text(
-                    &headings[hi], spans, fonts, &theme, content_width,
+                    &headings[hi], spans, fonts, theme, content_width,
                 );
-                let (_, color) = heading_style(level, &theme);
+                let (_, color) = heading_style(level, theme);
                 let scale = PxScale::from(size);
                 let heading_total_h = lines.len() as u32 * line_height;
 
@@ -188,31 +190,31 @@ pub(crate) fn render_markdown(
                     }
                     y += line_height;
                 }
-                y += PARAGRAPH_GAP;
+                y += layout.paragraph_gap;
             }
             Block::Paragraph { spans } => {
                 let scale = PxScale::from(theme.body_size);
-                let indented_width = content_width - BLOCK_INDENT;
+                let indented_width = content_width - layout.block_indent;
                 let lines = wrap_spans(spans, fonts, scale, indented_width);
                 let line_height = (theme.body_size * 1.4) as u32;
 
                 for line in &lines {
-                    draw_spans(&mut img, line, margin_left + BLOCK_INDENT, y, scale, fonts, &theme);
+                    draw_spans(&mut img, line, margin_left + layout.block_indent, y, scale, fonts, theme);
                     y += line_height;
                 }
-                y += PARAGRAPH_GAP;
+                y += layout.paragraph_gap;
             }
             Block::CodeBlock { text } => {
-                y = render_code_block(&mut img, text, fonts, &theme, y, content_width - BLOCK_INDENT, margin_left + BLOCK_INDENT);
-                y += PARAGRAPH_GAP;
+                y = render_code_block(&mut img, text, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
+                y += layout.paragraph_gap;
             }
             Block::Table { headers, rows } => {
-                y = render_table(&mut img, headers, rows, fonts, &theme, y, content_width - BLOCK_INDENT, margin_left + BLOCK_INDENT);
-                y += PARAGRAPH_GAP * 2;
+                y = render_table(&mut img, headers, rows, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
+                y += layout.paragraph_gap * 2;
             }
             Block::List { items } => {
-                y = render_list(&mut img, items, fonts, &theme, y, content_width, margin_left);
-                y += PARAGRAPH_GAP;
+                y = render_list(&mut img, items, fonts, theme, y, content_width, margin_left, layout);
+                y += layout.paragraph_gap;
             }
         }
     }
@@ -264,8 +266,9 @@ fn compute_total_height(
     theme: &Theme,
     content_width: u32,
     vp_height: u32,
+    layout: &LayoutParams,
 ) -> u32 {
-    let mut h: u32 = PARAGRAPH_GAP;
+    let mut h: u32 = layout.paragraph_gap;
     let mut heading_idx: usize = 0;
 
     for (bi, block) in blocks.iter().enumerate() {
@@ -279,46 +282,46 @@ fn compute_total_height(
         match block {
             Block::Metadata { entries } => {
                 let line_height = (theme.body_size * 1.5) as u32;
-                h += entries.len() as u32 * line_height + PARAGRAPH_GAP * 2;
+                h += entries.len() as u32 * line_height + layout.paragraph_gap * 2;
             }
             Block::Heading { level, spans } => {
-                if matches!(level, HeadingLevel::H1) && h > PARAGRAPH_GAP {
-                    h += H1_EXTRA_MARGIN;
+                if matches!(level, HeadingLevel::H1) && h > layout.paragraph_gap {
+                    h += layout.h1_extra_margin;
                 }
                 let hi = heading_idx;
                 heading_idx += 1;
                 let (lines, _, line_height) = wrap_heading_text(
                     &headings[hi], spans, fonts, theme, content_width,
                 );
-                h += lines.len() as u32 * line_height + PARAGRAPH_GAP;
+                h += lines.len() as u32 * line_height + layout.paragraph_gap;
             }
             Block::Paragraph { spans } => {
                 let scale = PxScale::from(theme.body_size);
-                let indented_width = content_width - BLOCK_INDENT;
+                let indented_width = content_width - layout.block_indent;
                 let lines = wrap_spans(spans, fonts, scale, indented_width);
                 let line_height = (theme.body_size * 1.4) as u32;
-                h += lines.len() as u32 * line_height + PARAGRAPH_GAP;
+                h += lines.len() as u32 * line_height + layout.paragraph_gap;
             }
             Block::CodeBlock { text } => {
                 let scale = PxScale::from(theme.body_size);
                 let line_height = (theme.body_size * 1.4) as u32;
-                let indented_width = content_width - BLOCK_INDENT;
+                let indented_width = content_width - layout.block_indent;
                 let wrapped = wrap_code_lines(text, fonts, scale, indented_width - 20);
                 let total_lines = wrapped.iter().map(|w| w.len() as u32).sum::<u32>().max(1);
-                h += total_lines * line_height + 20 + PARAGRAPH_GAP;
+                h += total_lines * line_height + 20 + layout.paragraph_gap;
             }
             Block::Table { headers, rows } => {
-                h += compute_table_height(headers, rows, fonts, theme, content_width - BLOCK_INDENT);
-                h += PARAGRAPH_GAP * 2;
+                h += compute_table_height(headers, rows, fonts, theme, content_width - layout.block_indent);
+                h += layout.paragraph_gap * 2;
             }
             Block::List { items } => {
-                h += compute_list_height(items, fonts, theme, content_width);
-                h += PARAGRAPH_GAP;
+                h += compute_list_height(items, fonts, theme, content_width, layout);
+                h += layout.paragraph_gap;
             }
         }
     }
 
-    h + PARAGRAPH_GAP + vp_height / 2
+    h + layout.paragraph_gap + vp_height / 2
 }
 
 fn render_metadata(
@@ -552,13 +555,14 @@ fn compute_list_height(
     fonts: &Fonts,
     theme: &Theme,
     content_width: u32,
+    layout: &LayoutParams,
 ) -> u32 {
     let scale = PxScale::from(theme.body_size);
     let line_height = (theme.body_size * 1.4) as u32;
     let mut h: u32 = 0;
 
     for item in items {
-        let indent = BLOCK_INDENT + item.depth * LIST_INDENT_PER_LEVEL;
+        let indent = layout.block_indent + item.depth * LIST_INDENT_PER_LEVEL;
         let mt = marker_text(&item.marker);
         let marker_w = text_size(scale, &fonts.regular, &mt).0;
         let text_width = content_width.saturating_sub(indent + marker_w);
@@ -577,13 +581,14 @@ fn render_list(
     start_y: u32,
     content_width: u32,
     margin_left: u32,
+    layout: &LayoutParams,
 ) -> u32 {
     let scale = PxScale::from(theme.body_size);
     let line_height = (theme.body_size * 1.4) as u32;
     let mut y = start_y;
 
     for item in items {
-        let indent = BLOCK_INDENT + item.depth * LIST_INDENT_PER_LEVEL;
+        let indent = layout.block_indent + item.depth * LIST_INDENT_PER_LEVEL;
         let x = margin_left + indent;
         let mt = marker_text(&item.marker);
         let marker_w = text_size(scale, &fonts.regular, &mt).0;
@@ -619,13 +624,16 @@ mod tests {
     use crate::headings::build_headings;
     use crate::parsing::parse_markdown;
     use crate::test_helpers::{test_fonts, SAMPLE_MD};
+    use crate::theme::default_theme;
 
     #[test]
     fn render_produces_valid_image() {
         let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
         let blocks = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
-        let (img, positions, margin_left) = render_markdown(&blocks, &mut headings, 800, 600, &fonts);
+        let (img, positions, margin_left) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout);
 
         assert!(img.width() == 800);
         assert!(img.height() > 100, "image too short: {}", img.height());
@@ -636,9 +644,11 @@ mod tests {
     #[test]
     fn render_headings_have_positions() {
         let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
         let blocks = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
-        render_markdown(&blocks, &mut headings, 800, 600, &fonts);
+        render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout);
 
         for i in 1..headings.len() {
             assert!(
@@ -655,14 +665,16 @@ mod tests {
     #[test]
     fn render_folded_is_shorter() {
         let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
         let blocks = parse_markdown(SAMPLE_MD);
 
         let mut headings_open = build_headings(&blocks);
-        let (img_open, _, _) = render_markdown(&blocks, &mut headings_open, 800, 600, &fonts);
+        let (img_open, _, _) = render_markdown(&blocks, &mut headings_open, 800, 600, &fonts, &theme, &layout);
 
         let mut headings_folded = build_headings(&blocks);
         headings_folded[0].folded = true;
-        let (img_folded, _, _) = render_markdown(&blocks, &mut headings_folded, 800, 600, &fonts);
+        let (img_folded, _, _) = render_markdown(&blocks, &mut headings_folded, 800, 600, &fonts, &theme, &layout);
 
         assert!(
             img_folded.height() < img_open.height(),
@@ -674,14 +686,14 @@ mod tests {
     #[test]
     fn render_preview_produces_valid_image() {
         let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
         let blocks = parse_markdown(SAMPLE_MD);
         let headings = build_headings(&blocks);
-        let img = render_preview(&blocks, &headings, 800, 600, &fonts);
+        let img = render_preview(&blocks, &headings, 800, 600, &fonts, &theme, &layout);
 
         assert_eq!(img.width(), 800);
         assert_eq!(img.height(), 600);
-        // Check it's not entirely blank (background color)
-        let theme = crate::theme::default_theme();
         let bg_pixel = theme.bg;
         let has_content = img.pixels().any(|p| *p != bg_pixel);
         assert!(has_content, "preview image should not be entirely blank");
@@ -690,20 +702,24 @@ mod tests {
     #[test]
     fn render_list_smoke_test() {
         let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
         let md = "- Item one\n- Item two\n\n1. First\n2. Second\n";
         let blocks = parse_markdown(md);
         let mut headings = build_headings(&blocks);
-        let (img, _, _) = render_markdown(&blocks, &mut headings, 800, 600, &fonts);
+        let (img, _, _) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout);
         assert!(img.height() > 100);
     }
 
     #[test]
     fn render_at_different_widths() {
         let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
         for width in [400, 800, 1200, 1920] {
             let blocks = parse_markdown(SAMPLE_MD);
             let mut headings = build_headings(&blocks);
-            let (img, _, _) = render_markdown(&blocks, &mut headings, width, 600, &fonts);
+            let (img, _, _) = render_markdown(&blocks, &mut headings, width, 600, &fonts, &theme, &layout);
             assert_eq!(img.width(), width);
             assert!(img.height() > 0);
         }

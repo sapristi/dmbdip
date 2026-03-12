@@ -45,3 +45,4 @@ The file sample.md can be used for manual testing
 - [x] Task 7: Help overlay when pressing `h`
 - [x] Task 8: Vim-style search with `/`, `n`/`N` navigation
 - [x] Task 9: File browser mode with two-pane layout
+- [x] Task 10: TOML configuration file support (theme, layout, fonts)

@@ -198,14 +198,16 @@ pub(crate) fn get_viewport_pixel_size() -> io::Result<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::LayoutParams;
     use crate::overlay::render_search_bar;
     use crate::state::AppState;
     use crate::test_helpers::{test_fonts, SAMPLE_MD};
+    use crate::theme::default_theme;
 
     #[test]
     fn display_viewport_does_not_panic() {
         let fonts = test_fonts();
-        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600, default_theme(), LayoutParams::default());
         let mut buf: Vec<u8> = Vec::new();
         let ci = state.cursor_info();
         let result = display_viewport(
@@ -220,7 +222,7 @@ mod tests {
     #[test]
     fn display_viewport_with_search_overlay() {
         let fonts = test_fonts();
-        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600);
+        let mut state = AppState::new(SAMPLE_MD, &fonts, 800, 600, default_theme(), LayoutParams::default());
         state.search_query = "bold".to_string();
         state.execute_search(&fonts);
 
