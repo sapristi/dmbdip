@@ -72,6 +72,10 @@ cp target/release/dmbdip ~/.local/bin/
 | h | Show help |
 | q/Esc/Ctrl-C | Quit |
 
+## Configuration
+
+Customize theme colors, font sizes, layout, and fonts via a TOML config file at `~/.config/dmbdip/dmbdip.toml`. All fields are optional. See [docs/configuration.md](docs/configuration.md) for the full reference.
+
 ## Development
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for architecture, tech stack, task tracking, and workflow notes.
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for architecture, tech stack, task tracking, and workflow notes.
