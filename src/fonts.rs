@@ -12,18 +12,18 @@ pub(crate) struct Fonts {
     pub(crate) mono: FontVec,
 }
 
-fn load_font_from_path(path: &str, name: &str) -> FontVec {
+fn load_font_from_path(path: &str) -> FontVec {
     let data = match std::fs::read(path) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Error: Could not read font file '{}' for {}: {}", path, name, e);
+            eprintln!("Error: Could not read font file '{}': {}", path, e);
             std::process::exit(1);
         }
     };
     match FontVec::try_from_vec(data) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("Error: Could not parse font file '{}' for {}: {}", path, name, e);
+            eprintln!("Error: Could not parse font file '{}': {}", path, e);
             std::process::exit(1);
         }
     }
@@ -92,11 +92,11 @@ pub(crate) fn load_fonts(font_config: Option<&FontsConfig>) -> Fonts {
     ];
 
     let regular = match font_config.and_then(|c| c.regular.as_deref()) {
-        Some(path) => load_font_from_path(path, "regular"),
+        Some(path) => load_font_from_path(path),
         None => load_font(&source, sans_families, &Properties::new(), "DejaVu Sans"),
     };
     let bold = match font_config.and_then(|c| c.bold.as_deref()) {
-        Some(path) => load_font_from_path(path, "bold"),
+        Some(path) => load_font_from_path(path),
         None => load_font(
             &source,
             sans_families,
@@ -105,7 +105,7 @@ pub(crate) fn load_fonts(font_config: Option<&FontsConfig>) -> Fonts {
         ),
     };
     let italic = match font_config.and_then(|c| c.italic.as_deref()) {
-        Some(path) => load_font_from_path(path, "italic"),
+        Some(path) => load_font_from_path(path),
         None => load_font(
             &source,
             sans_families,
@@ -114,7 +114,7 @@ pub(crate) fn load_fonts(font_config: Option<&FontsConfig>) -> Fonts {
         ),
     };
     let mono = match font_config.and_then(|c| c.mono.as_deref()) {
-        Some(path) => load_font_from_path(path, "mono"),
+        Some(path) => load_font_from_path(path),
         None => load_font(
             &source,
             mono_families,
