@@ -12,23 +12,6 @@ pub(crate) struct Fonts {
     pub(crate) mono: FontVec,
 }
 
-fn load_font_from_path(path: &str) -> FontVec {
-    let data = match std::fs::read(path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("Error: Could not read font file '{}': {}", path, e);
-            std::process::exit(1);
-        }
-    };
-    match FontVec::try_from_vec(data) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("Error: Could not parse font file '{}': {}", path, e);
-            std::process::exit(1);
-        }
-    }
-}
-
 fn load_font(
     source: &SystemSource,
     families: &[FamilyName],
@@ -82,51 +65,41 @@ fn load_font(
 pub(crate) fn load_fonts(font_config: Option<&FontsConfig>) -> Fonts {
     let source = SystemSource::new();
 
+    let sans_name = font_config
+        .and_then(|c| c.sans.as_deref())
+        .unwrap_or("DejaVu Sans");
+    let mono_name = font_config
+        .and_then(|c| c.mono.as_deref())
+        .unwrap_or("DejaVu Sans Mono");
+
     let sans_families = &[
-        FamilyName::Title("DejaVu Sans".to_string()),
+        FamilyName::Title(sans_name.to_string()),
         FamilyName::SansSerif,
     ];
     let mono_families = &[
-        FamilyName::Title("DejaVu Sans Mono".to_string()),
+        FamilyName::Title(mono_name.to_string()),
         FamilyName::Monospace,
     ];
 
-    let regular = match font_config.and_then(|c| c.regular.as_deref()) {
-        Some(path) => load_font_from_path(path),
-        None => load_font(&source, sans_families, &Properties::new(), "DejaVu Sans"),
-    };
-    let bold = match font_config.and_then(|c| c.bold.as_deref()) {
-        Some(path) => load_font_from_path(path),
-        None => load_font(
+    Fonts {
+        regular: load_font(&source, sans_families, &Properties::new(), sans_name),
+        bold: load_font(
             &source,
             sans_families,
             Properties::new().weight(Weight::BOLD),
-            "DejaVu Sans Bold",
+            &format!("{} Bold", sans_name),
         ),
-    };
-    let italic = match font_config.and_then(|c| c.italic.as_deref()) {
-        Some(path) => load_font_from_path(path),
-        None => load_font(
+        italic: load_font(
             &source,
             sans_families,
             Properties::new().style(Style::Italic),
-            "DejaVu Sans Italic",
+            &format!("{} Italic", sans_name),
         ),
-    };
-    let mono = match font_config.and_then(|c| c.mono.as_deref()) {
-        Some(path) => load_font_from_path(path),
-        None => load_font(
+        mono: load_font(
             &source,
             mono_families,
             &Properties::new(),
-            "DejaVu Sans Mono",
+            mono_name,
         ),
-    };
-
-    Fonts {
-        regular,
-        bold,
-        italic,
-        mono,
     }
 }

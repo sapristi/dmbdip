@@ -48,9 +48,7 @@ pub(crate) struct LayoutConfig {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub(crate) struct FontsConfig {
-    pub(crate) regular: Option<String>,
-    pub(crate) bold: Option<String>,
-    pub(crate) italic: Option<String>,
+    pub(crate) sans: Option<String>,
     pub(crate) mono: Option<String>,
 }
 

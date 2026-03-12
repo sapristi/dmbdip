@@ -13,7 +13,7 @@ Falls back to `~/.config/dmbdip/dmbdip.toml` when `XDG_CONFIG_HOME` is not set.
 - **Missing file:** silently uses all defaults (the normal case).
 - **Malformed TOML:** prints a warning to stderr, uses all defaults.
 - **Invalid color value:** prints a warning to stderr for that field, uses the default for that field.
-- **Invalid font path:** exits with an error (fonts are required to render).
+- **Unknown font name:** exits with an error (fonts are required to render).
 
 ## Full Example
 
@@ -48,10 +48,8 @@ cursor_width = 4
 cursor_margin = 6
 
 [fonts]
-regular = "/usr/share/fonts/TTF/DejaVuSans.ttf"
-bold = "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"
-italic = "/usr/share/fonts/TTF/DejaVuSans-Oblique.ttf"
-mono = "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
+sans = "DejaVu Sans"
+mono = "DejaVu Sans Mono"
 ```
 
 ## `[theme]` -- Colors and Font Sizes
@@ -93,13 +91,11 @@ All values are in pixels. Values are clamped to safe ranges to prevent rendering
 | `cursor_width` | int | `4` | 1--20 | Width of the heading cursor bar |
 | `cursor_margin` | int | `6` | 0--50 | Gap between cursor bar and text |
 
-## `[fonts]` -- Custom Font Paths
+## `[fonts]` -- Font Families
 
-Absolute paths to TrueType font files. When omitted, fonts are resolved through the system font library (fontconfig on Linux, CoreText on macOS), looking for DejaVu Sans first, then the system sans-serif/monospace fallback.
+Font family names resolved through the system font library (fontconfig on Linux, CoreText on macOS). Bold and italic variants are resolved automatically from the family name.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `regular` | string | (system) | Regular body font |
-| `bold` | string | (system) | Bold font for headings and emphasis |
-| `italic` | string | (system) | Italic font |
-| `mono` | string | (system) | Monospace font for code blocks |
+| `sans` | string | `"DejaVu Sans"` | Sans-serif font family (used for body text, headings, lists) |
+| `mono` | string | `"DejaVu Sans Mono"` | Monospace font family (used for code blocks and inline code) |
