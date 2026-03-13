@@ -1,3 +1,12 @@
+# First 
+
 read README.md and docs/DEVELOPMENT.md
 
-When done with implementation, commit the changes. Don't include Co-authored by in the commit message.
+## Implementation
+
+- When a task is done:
+  - check if any documentation needs updating
+  - Commit the changes
+- Clean git history if appropriate (squash fixup commits)
+- Evaluate quality every few commits and after fixing bugs
+- Don't include Co-authored by in the commit message.
