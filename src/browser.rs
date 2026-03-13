@@ -3,6 +3,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{self, ClearType},
 };
+use std::time::Duration;
 use image::RgbImage;
 use std::io::{self, BufWriter, Write};
 use std::collections::HashMap;
@@ -11,12 +12,14 @@ use std::path::{Path, PathBuf};
 use crate::constants::{LayoutParams, BROWSER_KEYBINDINGS};
 use crate::fonts::Fonts;
 use crate::headings::build_headings;
-use crate::kitty::display_viewport;
+use crate::kitty::{display_viewport, get_viewport_pixel_size};
 use crate::overlay::{render_help_overlay, render_help_overlay_with, render_search_bar};
 use crate::parsing::parse_markdown;
 use crate::render::render_preview;
 use crate::state::AppState;
 use crate::theme::Theme;
+
+const RESIZE_DEBOUNCE: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug)]
 enum BrowserEntry {
@@ -259,12 +262,12 @@ pub(crate) fn run_browser(
     dir: &Path,
     initial_file: Option<&Path>,
     fonts: &Fonts,
-    vp_width: u32,
-    vp_height: u32,
+    mut vp_width: u32,
+    mut vp_height: u32,
     theme: &Theme,
     layout: &LayoutParams,
 ) -> io::Result<()> {
-    let (_term_cols, term_rows) = terminal::size()?;
+    let (_term_cols, mut term_rows) = terminal::size()?;
     let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     let entries = scan_directory(&canonical_dir);
 
@@ -301,7 +304,7 @@ pub(crate) fn run_browser(
 
     let stdout = io::stdout();
     terminal::enable_raw_mode()?;
-    let preview_width = vp_width.saturating_sub(BROWSER_LEFT_COLS as u32 * 8);
+    let mut preview_width = vp_width.saturating_sub(BROWSER_LEFT_COLS as u32 * 8);
     {
         let mut out = BufWriter::new(stdout.lock());
         execute!(
@@ -386,12 +389,58 @@ pub(crate) fn run_browser(
             continue;
         }
 
+        let event = event::read()?;
+
+        if matches!(event, Event::Resize(_, _)) {
+            // Debounce: drain any queued resize events within the window
+            while event::poll(RESIZE_DEBOUNCE)? {
+                let ev = event::read()?;
+                if !matches!(ev, Event::Resize(_, _)) {
+                    break;
+                }
+            }
+            let (new_w, new_h) = get_viewport_pixel_size()?;
+            let (_, new_rows) = terminal::size()?;
+            vp_width = new_w;
+            vp_height = new_h;
+            term_rows = new_rows;
+            preview_width = vp_width.saturating_sub(BROWSER_LEFT_COLS as u32 * 8);
+
+            if state.doc_mode {
+                if let Some(ref mut ds) = state.doc_state {
+                    let cur_w = doc_width(vp_width, state.file_list_visible);
+                    ds.vp_width = cur_w;
+                    ds.vp_height = vp_height;
+                    ds.rerender(fonts);
+                    if !ds.search_query.is_empty() && !ds.search_matches.is_empty() {
+                        ds.execute_search(fonts);
+                    }
+                    let col = doc_col(state.file_list_visible);
+                    let ci = ds.cursor_info();
+                    let mut out = BufWriter::new(stdout.lock());
+                    execute!(out, terminal::Clear(ClearType::All))?;
+                    display_viewport(
+                        &mut out, &ds.img, ds.scroll_y, cur_w, vp_height,
+                        &mut ds.frame, col, None, ci,
+                        &ds.search_highlights, ds.search_current,
+                    )?;
+                }
+            } else {
+                state.preview_cache.clear();
+                let mut out = BufWriter::new(stdout.lock());
+                execute!(out, terminal::Clear(ClearType::All))?;
+                draw_file_list(&mut out, &state, term_rows)?;
+                show_preview(&mut out, &mut state, fonts, preview_width, vp_height, theme, layout)?;
+            }
+            continue;
+        }
+
         if let Event::Key(KeyEvent {
             code,
             modifiers,
             kind: KeyEventKind::Press,
             ..
-        }) = event::read()?
+        }) = event
         {
             if state.doc_mode {
                 if let Some(ref mut ds) = state.doc_state {
