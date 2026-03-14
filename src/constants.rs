@@ -1,6 +1,6 @@
 use crate::config::LayoutConfig;
 
-pub(crate) const SCROLL_STEP: u32 = 40;
+pub(crate) const SCROLL_STEP: u32 = 80;
 pub(crate) const MARGIN_LEFT: u32 = 50;
 pub(crate) const MARGIN_RIGHT: u32 = 20;
 pub(crate) const PARAGRAPH_GAP: u32 = 16;
