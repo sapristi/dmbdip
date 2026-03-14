@@ -568,10 +568,10 @@ pub(crate) fn run_browser(
                             }
                             (KeyCode::Char('n'), KeyModifiers::NONE) => ds.navigate_search(true),
                             (KeyCode::Char('N'), KeyModifiers::SHIFT) => ds.navigate_search(false),
-                            (KeyCode::Down, KeyModifiers::NONE) => ds.navigate_heading(1),
-                            (KeyCode::Up, KeyModifiers::NONE) => ds.navigate_heading(-1),
+                            (KeyCode::Tab, KeyModifiers::NONE) => ds.navigate_heading(1),
+                            (KeyCode::BackTab, KeyModifiers::SHIFT) => ds.navigate_heading(-1),
 
-                            (KeyCode::Tab, _) => ds.toggle_fold(fonts),
+                            (KeyCode::Char(' '), KeyModifiers::NONE) => ds.toggle_fold(fonts),
 
                             (KeyCode::Right, KeyModifiers::NONE) => {
                                 if state.file_list_visible {
@@ -622,10 +622,10 @@ pub(crate) fn run_browser(
                                 continue;
                             }
 
-                            (KeyCode::Char(' '), KeyModifiers::NONE) => {
+                            (KeyCode::Down, KeyModifiers::NONE) => {
                                 ds.scroll(layout.scroll_step as i32)
                             }
-                            (KeyCode::Char(' '), KeyModifiers::CONTROL) => {
+                            (KeyCode::Up, KeyModifiers::NONE) => {
                                 ds.scroll(-(layout.scroll_step as i32))
                             }
                             (KeyCode::Char('j'), _) => ds.scroll(layout.scroll_step as i32),

@@ -90,7 +90,7 @@ All values are in pixels. Values are clamped to safe ranges to prevent rendering
 | `max_content_width` | int | `900` | 100--4000 | Maximum content width before centering |
 | `h1_extra_margin` | int | `40` | 0--200 | Extra top margin before H1 headings |
 | `block_indent` | int | `24` | 0--200 | Indentation for paragraphs, code blocks, and lists |
-| `scroll_step` | int | `40` | 1--500 | Pixels scrolled per step (Space, j/k) |
+| `scroll_step` | int | `40` | 1--500 | Pixels scrolled per step (Up/Down, j/k) |
 | `cursor_width` | int | `4` | 1--20 | Width of the heading cursor bar |
 | `cursor_margin` | int | `6` | 0--50 | Gap between cursor bar and text |
 

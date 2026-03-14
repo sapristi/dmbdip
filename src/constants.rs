@@ -61,12 +61,11 @@ impl Default for LayoutParams {
 }
 
 pub(crate) const KEYBINDINGS: &[(&str, &str)] = &[
-    ("Up / Down", "Navigate between headings"),
-    ("Tab", "Toggle fold open/close"),
+    ("Tab / Shift+Tab", "Navigate between headings"),
+    ("Space", "Toggle fold open/close"),
     ("Right", "Hide file list (full-width)"),
     ("Left", "Show file list / back to browser"),
-    ("Space", "Scroll down"),
-    ("Ctrl+Space", "Scroll up"),
+    ("Up / Down", "Scroll"),
     ("j / k", "Small scroll steps"),
     ("PgUp / PgDn", "Half-page scroll"),
     ("Home / End", "Jump to top/bottom"),
