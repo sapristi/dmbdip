@@ -14,12 +14,12 @@ pub(crate) struct SmoothScroll {
 }
 
 /// Fraction of remaining distance covered each frame (~60 fps).
-const LERP_FACTOR: f64 = 0.25;
+const LERP_FACTOR: f64 = 0.35;
 
 /// Maximum distance the target may lead the current position.
 /// This prevents unbounded accumulation when holding a key, capping
 /// the effective scroll speed.
-const MAX_LEAD: f64 = 120.0;
+const MAX_LEAD: f64 = 200.0;
 
 /// Stop animating when we're within this many pixels of the target.
 const SNAP_THRESHOLD: f64 = 0.5;
