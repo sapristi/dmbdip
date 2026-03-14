@@ -17,6 +17,12 @@ When given a markdown file, opens it full-width with the file list hidden. Press
 
 ## Installation
 
+### From crates.io
+
+```
+cargo install dmbdip
+```
+
 ### Pre-built binaries
 
 Download pre-built binaries for Linux (x86_64) and macOS (x86_64, Apple Silicon) from the [GitHub Releases](https://github.com/sapristi/dmbdip/releases) page.
