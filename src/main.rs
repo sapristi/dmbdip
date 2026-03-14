@@ -8,6 +8,7 @@ mod overlay;
 mod parsing;
 mod render;
 mod source_render;
+mod smooth_scroll;
 mod source_state;
 mod state;
 mod text;

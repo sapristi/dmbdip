@@ -16,12 +16,14 @@ use crate::kitty::{display_viewport, get_viewport_pixel_size};
 use crate::overlay::{render_help_overlay, render_help_overlay_with, render_search_bar};
 use crate::parsing::parse_markdown;
 use crate::render::render_preview;
+use crate::smooth_scroll::SmoothScroll;
 use crate::source_render::render_source_preview;
 use crate::source_state::SourceViewState;
 use crate::state::AppState;
 use crate::theme::Theme;
 
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(100);
+const FRAME_DURATION: Duration = Duration::from_millis(16);
 
 #[derive(Clone, Debug)]
 enum BrowserEntry {
@@ -318,6 +320,8 @@ pub(crate) fn run_browser(
         extra_extensions: extra_extensions.to_vec(),
     };
 
+    let mut smooth_scroll = SmoothScroll::new();
+
     if let Some(file_path) = initial_file {
         let file_path = file_path.canonicalize().unwrap_or_else(|_| file_path.to_path_buf());
         let file_name = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -337,6 +341,7 @@ pub(crate) fn run_browser(
                 let ss = SourceViewState::new(&source, &ext, fonts, w, vp_height, *theme, *layout);
                 state.doc_state = Some(DocContent::Source(ss));
             }
+            smooth_scroll.jump_to(0);
             state.doc_mode = true;
             state.doc_path = Some(file_path);
         }
@@ -382,6 +387,63 @@ pub(crate) fn run_browser(
 
     let mut open_in_editor = false;
     loop {
+        // --- Smooth scroll animation tick ---
+        if smooth_scroll.active {
+            if let Some(new_pos) = smooth_scroll.tick() {
+                if state.doc_mode {
+                    let cur_width = doc_width(vp_width, state.file_list_visible);
+                    let col = doc_col(state.file_list_visible);
+                    match state.doc_state {
+                        Some(DocContent::Markdown(ref mut ds)) => {
+                            if new_pos != ds.scroll_y {
+                                ds.scroll_y = new_pos;
+                                ds.sync_cursor_to_scroll();
+                                let overlay = if !ds.search_matches.is_empty() {
+                                    Some(render_search_bar(
+                                        &ds.search_query,
+                                        Some((ds.search_current + 1, ds.search_matches.len())),
+                                        cur_width,
+                                        fonts,
+                                    ))
+                                } else {
+                                    None
+                                };
+                                let ci = ds.cursor_info();
+                                let mut out = BufWriter::new(stdout.lock());
+                                display_viewport(
+                                    &mut out, &ds.img, ds.scroll_y, cur_width, vp_height,
+                                    &mut ds.frame, col, overlay.as_ref(), ci,
+                                    &ds.search_highlights, ds.search_current,
+                                )?;
+                            }
+                        }
+                        Some(DocContent::Source(ref mut ss)) => {
+                            if new_pos != ss.scroll_y {
+                                ss.scroll_y = new_pos;
+                                let overlay = if !ss.search_matches.is_empty() {
+                                    Some(render_search_bar(
+                                        &ss.search_query,
+                                        Some((ss.search_current + 1, ss.search_matches.len())),
+                                        cur_width,
+                                        fonts,
+                                    ))
+                                } else {
+                                    None
+                                };
+                                let mut out = BufWriter::new(stdout.lock());
+                                display_viewport(
+                                    &mut out, &ss.img, ss.scroll_y, cur_width, vp_height,
+                                    &mut ss.frame, col, overlay.as_ref(), None,
+                                    &ss.search_highlights, ss.search_current,
+                                )?;
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+
         if open_in_editor {
             open_in_editor = false;
             if let Some(ref path) = state.doc_path {
@@ -419,6 +481,7 @@ pub(crate) fn run_browser(
                             let new_ss = SourceViewState::new(&content, &ext, fonts, cur_w, vp_height, *theme, *layout);
                             state.doc_state = Some(DocContent::Source(new_ss));
                         }
+                        smooth_scroll.jump_to(0);
                     }
                     let col = doc_col(state.file_list_visible);
                     let mut out = BufWriter::new(stdout.lock());
@@ -451,6 +514,12 @@ pub(crate) fn run_browser(
             continue;
         }
 
+        // --- Event polling (non-blocking during animation) ---
+        let timeout = if smooth_scroll.active { FRAME_DURATION } else { Duration::from_secs(86400) };
+        if !event::poll(timeout)? {
+            continue;
+        }
+
         let event = event::read()?;
 
         if matches!(event, Event::Resize(_, _)) {
@@ -479,6 +548,7 @@ pub(crate) fn run_browser(
                         if !ds.search_query.is_empty() && !ds.search_matches.is_empty() {
                             ds.execute_search(fonts);
                         }
+                        smooth_scroll.jump_to(ds.scroll_y);
                         let ci = ds.cursor_info();
                         let mut out = BufWriter::new(stdout.lock());
                         execute!(out, terminal::Clear(ClearType::All))?;
@@ -495,6 +565,7 @@ pub(crate) fn run_browser(
                         if !ss.search_query.is_empty() && !ss.search_matches.is_empty() {
                             ss.execute_search(fonts);
                         }
+                        smooth_scroll.jump_to(ss.scroll_y);
                         let mut out = BufWriter::new(stdout.lock());
                         execute!(out, terminal::Clear(ClearType::All))?;
                         display_viewport(
@@ -540,6 +611,7 @@ pub(crate) fn run_browser(
                             (KeyCode::Enter, _) => {
                                 ds.search_mode = false;
                                 ds.execute_search(fonts);
+                                smooth_scroll.jump_to(ds.scroll_y);
                                 true
                             }
                             (KeyCode::Backspace, _) => {
@@ -566,12 +638,32 @@ pub(crate) fn run_browser(
                                 ds.search_current = 0;
                                 true
                             }
-                            (KeyCode::Char('n'), KeyModifiers::NONE) => ds.navigate_search(true),
-                            (KeyCode::Char('N'), KeyModifiers::SHIFT) => ds.navigate_search(false),
-                            (KeyCode::Tab, KeyModifiers::NONE) => ds.navigate_heading(1),
-                            (KeyCode::BackTab, KeyModifiers::SHIFT) => ds.navigate_heading(-1),
+                            (KeyCode::Char('n'), KeyModifiers::NONE) => {
+                                let changed = ds.navigate_search(true);
+                                if changed { smooth_scroll.jump_to(ds.scroll_y); }
+                                changed
+                            }
+                            (KeyCode::Char('N'), KeyModifiers::SHIFT) => {
+                                let changed = ds.navigate_search(false);
+                                if changed { smooth_scroll.jump_to(ds.scroll_y); }
+                                changed
+                            }
+                            (KeyCode::Tab, KeyModifiers::NONE) => {
+                                let changed = ds.navigate_heading(1);
+                                if changed { smooth_scroll.jump_to(ds.scroll_y); }
+                                changed
+                            }
+                            (KeyCode::BackTab, KeyModifiers::SHIFT) => {
+                                let changed = ds.navigate_heading(-1);
+                                if changed { smooth_scroll.jump_to(ds.scroll_y); }
+                                changed
+                            }
 
-                            (KeyCode::Char(' '), KeyModifiers::NONE) => ds.toggle_fold(fonts),
+                            (KeyCode::Char(' '), KeyModifiers::NONE) => {
+                                let changed = ds.toggle_fold(fonts);
+                                if changed { smooth_scroll.jump_to(ds.scroll_y); }
+                                changed
+                            }
 
                             (KeyCode::Right, KeyModifiers::NONE) => {
                                 if state.file_list_visible {
@@ -582,6 +674,7 @@ pub(crate) fn run_browser(
                                     if !ds.search_query.is_empty() && !ds.search_matches.is_empty() {
                                         ds.execute_search(fonts);
                                     }
+                                    smooth_scroll.jump_to(ds.scroll_y);
                                     let mut out = BufWriter::new(stdout.lock());
                                     execute!(out, terminal::Clear(ClearType::All))?;
                                     let ci = ds.cursor_info();
@@ -615,6 +708,7 @@ pub(crate) fn run_browser(
                                 );
                                 state.doc_mode = false;
                                 state.file_list_visible = true;
+                                smooth_scroll.jump_to(0);
                                 let mut out = BufWriter::new(stdout.lock());
                                 browser_clear_preview(&mut out)?;
                                 draw_file_list(&mut out, &state, term_rows)?;
@@ -623,19 +717,34 @@ pub(crate) fn run_browser(
                             }
 
                             (KeyCode::Down, KeyModifiers::NONE) => {
-                                ds.scroll(layout.scroll_step as i32)
+                                smooth_scroll.scroll_by(layout.scroll_step as i32, ds.max_scroll());
+                                false
                             }
                             (KeyCode::Up, KeyModifiers::NONE) => {
-                                ds.scroll(-(layout.scroll_step as i32))
+                                smooth_scroll.scroll_by(-(layout.scroll_step as i32), ds.max_scroll());
+                                false
                             }
-                            (KeyCode::Char('j'), _) => ds.scroll(layout.scroll_step as i32),
-                            (KeyCode::Char('k'), _) => ds.scroll(-(layout.scroll_step as i32)),
-                            (KeyCode::PageDown, _) => ds.scroll(vp_height as i32 / 2),
-                            (KeyCode::PageUp, _) => ds.scroll(-(vp_height as i32 / 2)),
+                            (KeyCode::Char('j'), _) => {
+                                smooth_scroll.scroll_by(layout.scroll_step as i32, ds.max_scroll());
+                                false
+                            }
+                            (KeyCode::Char('k'), _) => {
+                                smooth_scroll.scroll_by(-(layout.scroll_step as i32), ds.max_scroll());
+                                false
+                            }
+                            (KeyCode::PageDown, _) => {
+                                smooth_scroll.scroll_by(vp_height as i32 / 2, ds.max_scroll());
+                                false
+                            }
+                            (KeyCode::PageUp, _) => {
+                                smooth_scroll.scroll_by(-(vp_height as i32 / 2), ds.max_scroll());
+                                false
+                            }
                             (KeyCode::Home, _) => {
                                 let changed = ds.scroll_y != 0;
                                 ds.scroll_y = 0;
                                 ds.sync_cursor_to_scroll();
+                                smooth_scroll.jump_to(0);
                                 changed
                             }
                             (KeyCode::End, _) => {
@@ -643,6 +752,7 @@ pub(crate) fn run_browser(
                                 let changed = ds.scroll_y != max;
                                 ds.scroll_y = max;
                                 ds.sync_cursor_to_scroll();
+                                smooth_scroll.jump_to(max);
                                 changed
                             }
                             (KeyCode::Char('h'), KeyModifiers::NONE) => {
@@ -734,6 +844,7 @@ pub(crate) fn run_browser(
                             (KeyCode::Enter, _) => {
                                 ss.search_mode = false;
                                 ss.execute_search(fonts);
+                                smooth_scroll.jump_to(ss.scroll_y);
                                 true
                             }
                             (KeyCode::Backspace, _) => {
@@ -760,8 +871,16 @@ pub(crate) fn run_browser(
                                 ss.search_current = 0;
                                 true
                             }
-                            (KeyCode::Char('n'), KeyModifiers::NONE) => ss.navigate_search(true),
-                            (KeyCode::Char('N'), KeyModifiers::SHIFT) => ss.navigate_search(false),
+                            (KeyCode::Char('n'), KeyModifiers::NONE) => {
+                                let changed = ss.navigate_search(true);
+                                if changed { smooth_scroll.jump_to(ss.scroll_y); }
+                                changed
+                            }
+                            (KeyCode::Char('N'), KeyModifiers::SHIFT) => {
+                                let changed = ss.navigate_search(false);
+                                if changed { smooth_scroll.jump_to(ss.scroll_y); }
+                                changed
+                            }
 
                             (KeyCode::Right, KeyModifiers::NONE) => {
                                 if state.file_list_visible {
@@ -772,6 +891,7 @@ pub(crate) fn run_browser(
                                     if !ss.search_query.is_empty() && !ss.search_matches.is_empty() {
                                         ss.execute_search(fonts);
                                     }
+                                    smooth_scroll.jump_to(ss.scroll_y);
                                     let mut out = BufWriter::new(stdout.lock());
                                     execute!(out, terminal::Clear(ClearType::All))?;
                                     display_viewport(
@@ -795,6 +915,7 @@ pub(crate) fn run_browser(
                                 }
                                 state.doc_mode = false;
                                 state.file_list_visible = true;
+                                smooth_scroll.jump_to(0);
                                 let mut out = BufWriter::new(stdout.lock());
                                 browser_clear_preview(&mut out)?;
                                 draw_file_list(&mut out, &state, term_rows)?;
@@ -803,26 +924,48 @@ pub(crate) fn run_browser(
                             }
 
                             (KeyCode::Char(' '), KeyModifiers::NONE) => {
-                                ss.scroll(layout.scroll_step as i32)
+                                smooth_scroll.scroll_by(layout.scroll_step as i32, ss.max_scroll());
+                                false
                             }
                             (KeyCode::Char(' '), KeyModifiers::CONTROL) => {
-                                ss.scroll(-(layout.scroll_step as i32))
+                                smooth_scroll.scroll_by(-(layout.scroll_step as i32), ss.max_scroll());
+                                false
                             }
-                            (KeyCode::Char('j'), _) => ss.scroll(layout.scroll_step as i32),
-                            (KeyCode::Char('k'), _) => ss.scroll(-(layout.scroll_step as i32)),
-                            (KeyCode::Down, _) => ss.scroll(layout.scroll_step as i32),
-                            (KeyCode::Up, _) => ss.scroll(-(layout.scroll_step as i32)),
-                            (KeyCode::PageDown, _) => ss.scroll(vp_height as i32 / 2),
-                            (KeyCode::PageUp, _) => ss.scroll(-(vp_height as i32 / 2)),
+                            (KeyCode::Char('j'), _) => {
+                                smooth_scroll.scroll_by(layout.scroll_step as i32, ss.max_scroll());
+                                false
+                            }
+                            (KeyCode::Char('k'), _) => {
+                                smooth_scroll.scroll_by(-(layout.scroll_step as i32), ss.max_scroll());
+                                false
+                            }
+                            (KeyCode::Down, _) => {
+                                smooth_scroll.scroll_by(layout.scroll_step as i32, ss.max_scroll());
+                                false
+                            }
+                            (KeyCode::Up, _) => {
+                                smooth_scroll.scroll_by(-(layout.scroll_step as i32), ss.max_scroll());
+                                false
+                            }
+                            (KeyCode::PageDown, _) => {
+                                smooth_scroll.scroll_by(vp_height as i32 / 2, ss.max_scroll());
+                                false
+                            }
+                            (KeyCode::PageUp, _) => {
+                                smooth_scroll.scroll_by(-(vp_height as i32 / 2), ss.max_scroll());
+                                false
+                            }
                             (KeyCode::Home, _) => {
                                 let changed = ss.scroll_y != 0;
                                 ss.scroll_y = 0;
+                                smooth_scroll.jump_to(0);
                                 changed
                             }
                             (KeyCode::End, _) => {
                                 let max = ss.max_scroll();
                                 let changed = ss.scroll_y != max;
                                 ss.scroll_y = max;
+                                smooth_scroll.jump_to(max);
                                 changed
                             }
                             (KeyCode::Char('h'), KeyModifiers::NONE) => {
@@ -940,6 +1083,7 @@ pub(crate) fn run_browser(
                                             &mut ds.frame, doc_col(false), None, ci,
                                             &ds.search_highlights, ds.search_current,
                                         )?;
+                                        smooth_scroll.jump_to(ds.scroll_y);
                                         state.doc_state = Some(DocContent::Markdown(ds));
                                     } else {
                                         let ext = file_extension(&name);
@@ -956,6 +1100,7 @@ pub(crate) fn run_browser(
                                             &mut ss.frame, doc_col(false), None, None,
                                             &ss.search_highlights, ss.search_current,
                                         )?;
+                                        smooth_scroll.jump_to(ss.scroll_y);
                                         state.doc_state = Some(DocContent::Source(ss));
                                     }
                                     state.doc_mode = true;

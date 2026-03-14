@@ -157,6 +157,7 @@ impl AppState {
         Some((cursor_x, heading.y_pos, heading.heading_height, c))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn scroll(&mut self, delta: i32) -> bool {
         let max = self.max_scroll();
         let new_y = if delta > 0 {

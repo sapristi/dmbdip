@@ -73,6 +73,7 @@ impl SourceViewState {
         self.img.height().saturating_sub(self.vp_height)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn scroll(&mut self, delta: i32) -> bool {
         let max = self.max_scroll();
         let new_y = if delta > 0 {
