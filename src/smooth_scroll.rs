@@ -2,6 +2,8 @@
 ///
 /// Instead of jumping instantly to the target, the scroll position
 /// interpolates toward it over several frames using exponential easing.
+/// The target-current gap is capped so that holding a key produces
+/// steady scrolling rather than unbounded acceleration.
 pub(crate) struct SmoothScroll {
     /// Where we want to end up (in pixels).
     target: f64,
@@ -12,13 +14,12 @@ pub(crate) struct SmoothScroll {
 }
 
 /// Fraction of remaining distance covered each frame (~60 fps).
-/// Lower = smoother trailing motion, especially visible when holding
-/// arrow keys (repeated small deltas accumulate ahead of position).
-const LERP_FACTOR: f64 = 0.18;
+const LERP_FACTOR: f64 = 0.25;
 
-/// Minimum pixels to move per frame, so large jumps (PgUp/PgDn) don't
-/// feel sluggish despite the low lerp factor.
-const MIN_STEP: f64 = 3.0;
+/// Maximum distance the target may lead the current position.
+/// This prevents unbounded accumulation when holding a key, capping
+/// the effective scroll speed.
+const MAX_LEAD: f64 = 120.0;
 
 /// Stop animating when we're within this many pixels of the target.
 const SNAP_THRESHOLD: f64 = 0.5;
@@ -40,15 +41,21 @@ impl SmoothScroll {
     }
 
     /// Request a smooth scroll by a relative delta from the current *target*.
-    /// Clamps to [0, max_scroll].
+    /// Clamps to [0, max_scroll]. The target-current gap is capped at
+    /// MAX_LEAD so holding a key doesn't cause runaway acceleration.
     pub(crate) fn scroll_by(&mut self, delta: i32, max_scroll: u32) {
         let new_target = if delta > 0 {
             (self.target + delta as f64).min(max_scroll as f64)
         } else {
             (self.target + delta as f64).max(0.0)
         };
-        if (new_target - self.target).abs() > 0.01 {
-            self.target = new_target;
+        // Cap how far the target can lead the current position
+        let clamped = new_target.clamp(
+            self.current - MAX_LEAD,
+            self.current + MAX_LEAD,
+        ).clamp(0.0, max_scroll as f64);
+        if (clamped - self.target).abs() > 0.01 {
+            self.target = clamped;
             self.active = true;
         }
     }
@@ -64,14 +71,7 @@ impl SmoothScroll {
             self.current = self.target;
             self.active = false;
         } else {
-            let step = diff * LERP_FACTOR;
-            // Ensure minimum movement so large distances resolve promptly
-            let step = if step > 0.0 {
-                step.max(MIN_STEP)
-            } else {
-                step.min(-MIN_STEP)
-            };
-            self.current += step;
+            self.current += diff * LERP_FACTOR;
         }
         Some(self.current.round() as u32)
     }
