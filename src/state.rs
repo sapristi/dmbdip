@@ -13,6 +13,7 @@ use crate::types::{Block, HeadingInfo, ListMarker};
 
 pub(crate) struct AppState {
     pub(crate) blocks: Vec<Block>,
+    pub(crate) block_source_lines: Vec<usize>,
     pub(crate) headings: Vec<HeadingInfo>,
     pub(crate) current_heading: Option<usize>,
     pub(crate) scroll_y: u32,
@@ -40,12 +41,13 @@ impl AppState {
         theme: Theme,
         layout: LayoutParams,
     ) -> Self {
-        let blocks = parse_markdown(source);
+        let (blocks, block_source_lines) = parse_markdown(source);
         let headings = build_headings(&blocks);
         let current_heading = if headings.is_empty() { None } else { Some(0) };
 
         let mut state = AppState {
             blocks,
+            block_source_lines,
             headings,
             current_heading,
             scroll_y: 0,
@@ -192,6 +194,23 @@ impl AppState {
         if let Some(idx) = best {
             self.current_heading = Some(idx);
         }
+    }
+
+    /// Return the source line number of the block closest to the current scroll position.
+    pub(crate) fn current_source_line(&self) -> Option<usize> {
+        if self.block_y_positions.is_empty() {
+            return None;
+        }
+        let target_y = self.scroll_y + self.vp_height / 4;
+        let mut best_block_idx = self.block_y_positions[0].0;
+        for &(bi, y) in &self.block_y_positions {
+            if y <= target_y {
+                best_block_idx = bi;
+            } else {
+                break;
+            }
+        }
+        self.block_source_lines.get(best_block_idx).copied()
     }
 
     pub(crate) fn execute_search(&mut self, fonts: &Fonts) {

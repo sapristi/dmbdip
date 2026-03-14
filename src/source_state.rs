@@ -88,6 +88,16 @@ impl SourceViewState {
         }
     }
 
+    /// Return the source line number at the current scroll position.
+    pub(crate) fn current_source_line(&self) -> usize {
+        let line_height = (self.theme.body_size * 1.4) as u32;
+        if line_height == 0 {
+            return 1;
+        }
+        let line_index = self.scroll_y / line_height;
+        (line_index as usize) + 1
+    }
+
     pub(crate) fn execute_search(&mut self, fonts: &Fonts) {
         self.search_matches.clear();
         self.search_highlights.clear();

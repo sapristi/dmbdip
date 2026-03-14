@@ -237,7 +237,7 @@ fn show_preview(
             if state.preview_cache.get(&file_path).is_none() {
                 if let Ok(source) = std::fs::read_to_string(&file_path) {
                     let img = if is_markdown(name) {
-                        let blocks = parse_markdown(&source);
+                        let (blocks, _) = parse_markdown(&source);
                         let headings = build_headings(&blocks);
                         render_preview(&blocks, &headings, preview_width, vp_height, fonts, theme, layout)
                     } else {
@@ -386,14 +386,21 @@ pub(crate) fn run_browser(
             open_in_editor = false;
             if let Some(ref path) = state.doc_path {
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                let source_line = match &state.doc_state {
+                    Some(DocContent::Markdown(ds)) => ds.current_source_line(),
+                    Some(DocContent::Source(ss)) => Some(ss.current_source_line()),
+                    None => None,
+                };
                 terminal::disable_raw_mode()?;
                 {
                     let mut out = BufWriter::new(stdout.lock());
                     execute!(out, terminal::LeaveAlternateScreen, cursor::Show)?;
                 }
-                let _status = std::process::Command::new(&editor)
-                    .arg(path)
-                    .status();
+                let mut cmd = std::process::Command::new(&editor);
+                if let Some(line) = source_line {
+                    cmd.arg(format!("+{}", line));
+                }
+                let _status = cmd.arg(path).status();
                 {
                     let mut out = BufWriter::new(stdout.lock());
                     execute!(out, terminal::EnterAlternateScreen, cursor::Hide)?;

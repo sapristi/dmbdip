@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn heading_numbering() {
-        let blocks = parse_markdown(SAMPLE_MD);
+        let (blocks, _) = parse_markdown(SAMPLE_MD);
         let headings = build_headings(&blocks);
         assert_eq!(headings.len(), 5);
         assert_eq!(headings[0].number, "1.");
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn fold_hides_children() {
-        let blocks = parse_markdown(SAMPLE_MD);
+        let (blocks, _) = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
         headings[1].folded = true;
         let h2_bi = headings[1].block_index;
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn fold_h1_hides_everything() {
-        let blocks = parse_markdown(SAMPLE_MD);
+        let (blocks, _) = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
         headings[0].folded = true;
         for bi in (headings[0].block_index + 1)..blocks.len() {

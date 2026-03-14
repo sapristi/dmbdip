@@ -631,7 +631,7 @@ mod tests {
         let fonts = test_fonts();
         let theme = default_theme();
         let layout = LayoutParams::default();
-        let blocks = parse_markdown(SAMPLE_MD);
+        let (blocks, _) = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
         let (img, positions, margin_left) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout);
 
@@ -646,7 +646,7 @@ mod tests {
         let fonts = test_fonts();
         let theme = default_theme();
         let layout = LayoutParams::default();
-        let blocks = parse_markdown(SAMPLE_MD);
+        let (blocks, _) = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
         render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout);
 
@@ -667,7 +667,7 @@ mod tests {
         let fonts = test_fonts();
         let theme = default_theme();
         let layout = LayoutParams::default();
-        let blocks = parse_markdown(SAMPLE_MD);
+        let (blocks, _) = parse_markdown(SAMPLE_MD);
 
         let mut headings_open = build_headings(&blocks);
         let (img_open, _, _) = render_markdown(&blocks, &mut headings_open, 800, 600, &fonts, &theme, &layout);
@@ -688,7 +688,7 @@ mod tests {
         let fonts = test_fonts();
         let theme = default_theme();
         let layout = LayoutParams::default();
-        let blocks = parse_markdown(SAMPLE_MD);
+        let (blocks, _) = parse_markdown(SAMPLE_MD);
         let headings = build_headings(&blocks);
         let img = render_preview(&blocks, &headings, 800, 600, &fonts, &theme, &layout);
 
@@ -705,7 +705,7 @@ mod tests {
         let theme = default_theme();
         let layout = LayoutParams::default();
         let md = "- Item one\n- Item two\n\n1. First\n2. Second\n";
-        let blocks = parse_markdown(md);
+        let (blocks, _) = parse_markdown(md);
         let mut headings = build_headings(&blocks);
         let (img, _, _) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout);
         assert!(img.height() > 100);
@@ -717,7 +717,7 @@ mod tests {
         let theme = default_theme();
         let layout = LayoutParams::default();
         for width in [400, 800, 1200, 1920] {
-            let blocks = parse_markdown(SAMPLE_MD);
+            let (blocks, _) = parse_markdown(SAMPLE_MD);
             let mut headings = build_headings(&blocks);
             let (img, _, _) = render_markdown(&blocks, &mut headings, width, 600, &fonts, &theme, &layout);
             assert_eq!(img.width(), width);
