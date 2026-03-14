@@ -8,6 +8,7 @@ pub(crate) struct Config {
     pub(crate) theme: ThemeConfig,
     pub(crate) layout: LayoutConfig,
     pub(crate) fonts: FontsConfig,
+    pub(crate) browser: BrowserConfig,
 }
 
 #[derive(Deserialize, Default)]
@@ -50,6 +51,12 @@ pub(crate) struct LayoutConfig {
 pub(crate) struct FontsConfig {
     pub(crate) sans: Option<String>,
     pub(crate) mono: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct BrowserConfig {
+    pub(crate) extra_extensions: Option<Vec<String>>,
 }
 
 pub(crate) fn load_config() -> Config {
@@ -186,5 +193,16 @@ margin_left = 30
         assert_eq!(config.layout.margin_left, Some(30));
         assert!(config.theme.body_color.is_none());
         assert!(config.layout.margin_right.is_none());
+    }
+
+    #[test]
+    fn deserialize_browser_config() {
+        let toml_str = r#"
+[browser]
+extra_extensions = ["rs", "py", "toml"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let exts = config.browser.extra_extensions.unwrap();
+        assert_eq!(exts, vec!["rs", "py", "toml"]);
     }
 }

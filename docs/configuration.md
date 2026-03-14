@@ -50,6 +50,9 @@ cursor_margin = 6
 [fonts]
 sans = "DejaVu Sans"
 mono = "DejaVu Sans Mono"
+
+[browser]
+extra_extensions = ["rs", "py", "toml", "js"]
 ```
 
 ## `[theme]` -- Colors and Font Sizes
@@ -99,3 +102,9 @@ Font family names resolved through the system font library (fontconfig on Linux,
 |-------|------|---------|-------------|
 | `sans` | string | `"DejaVu Sans"` | Sans-serif font family (used for body text, headings, lists) |
 | `mono` | string | `"DejaVu Sans Mono"` | Monospace font family (used for code blocks and inline code) |
+
+## `[browser]` -- File Browser
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `extra_extensions` | list of strings | `[]` | Additional file extensions to show in the browser (e.g., `["rs", "py", "toml"]`). Markdown files (`.md`) are always shown. Source files are displayed with syntax highlighting using a monospace font. |

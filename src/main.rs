@@ -7,6 +7,8 @@ mod kitty;
 mod overlay;
 mod parsing;
 mod render;
+mod source_render;
+mod source_state;
 mod state;
 mod text;
 mod theme;
@@ -58,15 +60,16 @@ fn main() -> io::Result<()> {
     let layout = LayoutParams::from_config(&config.layout);
     let fonts = load_fonts(Some(&config.fonts));
     let (vp_width, vp_height) = get_viewport_pixel_size()?;
+    let extra_extensions = config.browser.extra_extensions.unwrap_or_default();
 
     if path.is_dir() {
-        browser::run_browser(path, None, &fonts, vp_width, vp_height, &theme, &layout)
+        browser::run_browser(path, None, &fonts, vp_width, vp_height, &theme, &layout, &extra_extensions)
     } else {
         let dir = match path.parent() {
             Some(p) if p.as_os_str().is_empty() => Path::new("."),
             Some(p) => p,
             None => Path::new("."),
         };
-        browser::run_browser(dir, Some(path), &fonts, vp_width, vp_height, &theme, &layout)
+        browser::run_browser(dir, Some(path), &fonts, vp_width, vp_height, &theme, &layout, &extra_extensions)
     }
 }
