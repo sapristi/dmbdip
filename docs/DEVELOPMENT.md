@@ -25,7 +25,7 @@
 
 ## Manual testing
 
-The file sample.md can be used for manual testing
+The file docs/sample.md can be used for manual testing
 
 # Track advancement
 
