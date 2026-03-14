@@ -73,7 +73,7 @@ pub(crate) fn load_config() -> Config {
     }
 }
 
-fn config_path() -> PathBuf {
+pub(crate) fn config_path() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         PathBuf::from(xdg).join("dmbdip").join("dmbdip.toml")
     } else if let Ok(home) = std::env::var("HOME") {
@@ -128,6 +128,67 @@ pub(crate) fn build_theme(config: &ThemeConfig) -> crate::theme::Theme {
         meta_val_color: color_or_default(&config.meta_val_color, Rgb([200, 200, 200]), "meta_val_color"),
         table_border: color_or_default(&config.table_border, Rgb([100, 100, 120]), "table_border"),
         table_header_bg: color_or_default(&config.table_header_bg, Rgb([50, 50, 65]), "table_header_bg"),
+    }
+}
+
+pub(crate) fn debug_config(config: &Config) {
+    let path = config_path();
+    let file_exists = path.exists();
+    eprintln!("Config file: {}", path.display());
+    eprintln!("  exists: {}", file_exists);
+    if !file_exists {
+        eprintln!("  (using all defaults)");
+        return;
+    }
+    eprintln!();
+    eprintln!("Overridden options:");
+
+    let mut any = false;
+
+    // [theme]
+    macro_rules! check_opt {
+        ($section:expr, $field:expr, $val:expr) => {
+            if let Some(ref v) = $val {
+                eprintln!("  [{}] {} = {:?}", $section, $field, v);
+                any = true;
+            }
+        };
+    }
+
+    check_opt!("theme", "bg", config.theme.bg);
+    check_opt!("theme", "body_color", config.theme.body_color);
+    check_opt!("theme", "body_size", config.theme.body_size);
+    check_opt!("theme", "code_color", config.theme.code_color);
+    check_opt!("theme", "code_bg", config.theme.code_bg);
+    check_opt!("theme", "cursor_color", config.theme.cursor_color);
+    check_opt!("theme", "h1_color", config.theme.h1_color);
+    check_opt!("theme", "h1_size", config.theme.h1_size);
+    check_opt!("theme", "h2_color", config.theme.h2_color);
+    check_opt!("theme", "h2_size", config.theme.h2_size);
+    check_opt!("theme", "h3_color", config.theme.h3_color);
+    check_opt!("theme", "h3_size", config.theme.h3_size);
+    check_opt!("theme", "meta_key_color", config.theme.meta_key_color);
+    check_opt!("theme", "meta_val_color", config.theme.meta_val_color);
+    check_opt!("theme", "table_border", config.theme.table_border);
+    check_opt!("theme", "table_header_bg", config.theme.table_header_bg);
+
+    check_opt!("layout", "margin_left", config.layout.margin_left);
+    check_opt!("layout", "margin_right", config.layout.margin_right);
+    check_opt!("layout", "paragraph_gap", config.layout.paragraph_gap);
+    check_opt!("layout", "max_content_width", config.layout.max_content_width);
+    check_opt!("layout", "h1_extra_margin", config.layout.h1_extra_margin);
+    check_opt!("layout", "block_indent", config.layout.block_indent);
+    check_opt!("layout", "scroll_step", config.layout.scroll_step);
+    check_opt!("layout", "cursor_width", config.layout.cursor_width);
+    check_opt!("layout", "cursor_margin", config.layout.cursor_margin);
+
+    check_opt!("fonts", "sans", config.fonts.sans);
+    check_opt!("fonts", "mono", config.fonts.mono);
+
+    check_opt!("browser", "extra_extensions", config.browser.extra_extensions);
+
+    if !any {
+        eprintln!("  (none — file exists but all fields use defaults)");
     }
 }
 

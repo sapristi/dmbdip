@@ -20,7 +20,7 @@ mod test_helpers;
 use std::io;
 use std::path::Path;
 
-use config::{build_theme, load_config};
+use config::{build_theme, debug_config, load_config};
 use constants::{LayoutParams, KEYBINDINGS, BROWSER_KEYBINDINGS};
 use fonts::load_fonts;
 use kitty::get_viewport_pixel_size;
@@ -28,12 +28,19 @@ use kitty::get_viewport_pixel_size;
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
+    if args.get(1).map(|s| s.as_str()) == Some("--debug-config") {
+        let config = load_config();
+        debug_config(&config);
+        std::process::exit(0);
+    }
+
     if args.get(1).map(|s| s.as_str()) == Some("--help")
         || args.get(1).map(|s| s.as_str()) == Some("-h")
     {
         eprintln!("dmbdip - Display Markdown But Do it Pretty");
         eprintln!();
         eprintln!("Usage: dmbdip [markdown-file-or-directory]");
+        eprintln!("       dmbdip --debug-config");
         eprintln!();
         eprintln!("Renders markdown files as images in the terminal using the Kitty");
         eprintln!("graphics protocol. Always opens in browser mode with a file list");
