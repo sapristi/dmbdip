@@ -12,8 +12,13 @@ pub(crate) struct SmoothScroll {
 }
 
 /// Fraction of remaining distance covered each frame (~60 fps).
-/// Higher = snappier, lower = smoother. 0.35 feels responsive yet smooth.
-const LERP_FACTOR: f64 = 0.35;
+/// Lower = smoother trailing motion, especially visible when holding
+/// arrow keys (repeated small deltas accumulate ahead of position).
+const LERP_FACTOR: f64 = 0.18;
+
+/// Minimum pixels to move per frame, so large jumps (PgUp/PgDn) don't
+/// feel sluggish despite the low lerp factor.
+const MIN_STEP: f64 = 3.0;
 
 /// Stop animating when we're within this many pixels of the target.
 const SNAP_THRESHOLD: f64 = 0.5;
@@ -59,7 +64,14 @@ impl SmoothScroll {
             self.current = self.target;
             self.active = false;
         } else {
-            self.current += diff * LERP_FACTOR;
+            let step = diff * LERP_FACTOR;
+            // Ensure minimum movement so large distances resolve promptly
+            let step = if step > 0.0 {
+                step.max(MIN_STEP)
+            } else {
+                step.min(-MIN_STEP)
+            };
+            self.current += step;
         }
         Some(self.current.round() as u32)
     }
