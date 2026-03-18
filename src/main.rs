@@ -1,6 +1,7 @@
 mod browser;
 mod config;
 mod constants;
+mod file_watcher;
 mod fonts;
 mod headings;
 mod kitty;

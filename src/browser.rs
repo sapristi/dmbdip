@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::constants::{LayoutParams, BROWSER_KEYBINDINGS};
+use crate::file_watcher::FileWatcher;
 use crate::fonts::Fonts;
 use crate::headings::build_headings;
 use crate::kitty::{display_viewport, get_viewport_pixel_size};
@@ -347,6 +348,15 @@ pub(crate) fn run_browser(
         }
     }
 
+    let (mut file_watcher, watcher_rx) = if let Some(ref path) = state.doc_path {
+        match FileWatcher::new(path) {
+            Some((fw, rx)) => (Some(fw), Some(rx)),
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
     let stdout = io::stdout();
     terminal::enable_raw_mode()?;
     let mut preview_width = vp_width.saturating_sub(BROWSER_LEFT_COLS as u32 * 8);
@@ -514,9 +524,79 @@ pub(crate) fn run_browser(
             continue;
         }
 
+        // --- File watcher: reload on external change ---
+        if let Some(ref rx) = watcher_rx {
+            if rx.try_recv().is_ok() {
+                // Drain any extra queued notifications
+                while rx.try_recv().is_ok() {}
+
+                if state.doc_mode {
+                    if let Some(ref path) = state.doc_path {
+                        if let Ok(content) = std::fs::read_to_string(path) {
+                            let cur_w = doc_width(vp_width, state.file_list_visible);
+                            let col = doc_col(state.file_list_visible);
+                            let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+                            if is_markdown(&file_name) {
+                                let saved_scroll = match &state.doc_state {
+                                    Some(DocContent::Markdown(ds)) => Some((
+                                        ds.scroll_y,
+                                        ds.current_heading,
+                                        ds.headings.iter().map(|h| h.folded).collect::<Vec<_>>(),
+                                    )),
+                                    _ => None,
+                                };
+                                let mut new_ds = AppState::new(&content, fonts, cur_w, vp_height, *theme, *layout);
+                                if let Some((scroll, heading, folded)) = saved_scroll {
+                                    new_ds.scroll_y = scroll.min(new_ds.max_scroll());
+                                    new_ds.current_heading = heading;
+                                    for (i, &f) in folded.iter().enumerate() {
+                                        if i < new_ds.headings.len() {
+                                            new_ds.headings[i].folded = f;
+                                        }
+                                    }
+                                    new_ds.rerender(fonts);
+                                    new_ds.scroll_y = new_ds.scroll_y.min(new_ds.max_scroll());
+                                }
+                                smooth_scroll.jump_to(new_ds.scroll_y);
+                                let ci = new_ds.cursor_info();
+                                let mut out = BufWriter::new(stdout.lock());
+                                display_viewport(
+                                    &mut out, &new_ds.img, new_ds.scroll_y, cur_w, vp_height,
+                                    &mut new_ds.frame, col, None, ci,
+                                    &new_ds.search_highlights, new_ds.search_current,
+                                )?;
+                                state.doc_state = Some(DocContent::Markdown(new_ds));
+                            } else {
+                                let saved_scroll = match &state.doc_state {
+                                    Some(DocContent::Source(ss)) => Some(ss.scroll_y),
+                                    _ => None,
+                                };
+                                let ext = file_extension(&file_name);
+                                let mut new_ss = SourceViewState::new(&content, &ext, fonts, cur_w, vp_height, *theme, *layout);
+                                if let Some(scroll) = saved_scroll {
+                                    new_ss.scroll_y = scroll.min(new_ss.max_scroll());
+                                }
+                                smooth_scroll.jump_to(new_ss.scroll_y);
+                                let mut out = BufWriter::new(stdout.lock());
+                                display_viewport(
+                                    &mut out, &new_ss.img, new_ss.scroll_y, cur_w, vp_height,
+                                    &mut new_ss.frame, col, None, None,
+                                    &new_ss.search_highlights, new_ss.search_current,
+                                )?;
+                                state.doc_state = Some(DocContent::Source(new_ss));
+                            }
+                            // Invalidate preview cache for this file
+                            state.preview_cache.entries.retain(|(p, _)| p != path);
+                        }
+                    }
+                }
+            }
+        }
+
         // --- Event polling (non-blocking during animation) ---
-        let timeout = if smooth_scroll.active { FRAME_DURATION } else { Duration::from_secs(86400) };
-        if !event::poll(timeout)? {
+        let poll_timeout = if smooth_scroll.active { FRAME_DURATION } else { Duration::from_millis(250) };
+        if !event::poll(poll_timeout)? {
             continue;
         }
 
@@ -1104,7 +1184,10 @@ pub(crate) fn run_browser(
                                         state.doc_state = Some(DocContent::Source(ss));
                                     }
                                     state.doc_mode = true;
-                                    state.doc_path = Some(file_path);
+                                    state.doc_path = Some(file_path.clone());
+                                    if let Some(ref mut fw) = file_watcher {
+                                        fw.watch(&file_path);
+                                    }
                                 }
                                 continue;
                             }
