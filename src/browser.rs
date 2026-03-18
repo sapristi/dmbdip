@@ -3,7 +3,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{self, ClearType},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use image::RgbImage;
 use std::io::{self, BufWriter, Write};
 use std::collections::HashMap;
@@ -348,14 +348,13 @@ pub(crate) fn run_browser(
         }
     }
 
-    let (mut file_watcher, watcher_rx) = if let Some(ref path) = state.doc_path {
-        match FileWatcher::new(path) {
-            Some((fw, rx)) => (Some(fw), Some(rx)),
-            None => (None, None),
-        }
-    } else {
-        (None, None)
+    let (mut file_watcher, watcher_rx) = match FileWatcher::new() {
+        Some((fw, rx)) => (Some(fw), Some(rx)),
+        None => (None, None),
     };
+    if let (Some(fw), Some(path)) = (&mut file_watcher, &state.doc_path) {
+        fw.watch(path);
+    }
 
     let stdout = io::stdout();
     terminal::enable_raw_mode()?;
@@ -396,6 +395,7 @@ pub(crate) fn run_browser(
     }
 
     let mut open_in_editor = false;
+    let mut last_reload = Instant::now();
     loop {
         // --- Smooth scroll animation tick ---
         if smooth_scroll.active {
@@ -529,6 +529,12 @@ pub(crate) fn run_browser(
             if rx.try_recv().is_ok() {
                 // Drain any extra queued notifications
                 while rx.try_recv().is_ok() {}
+
+                // Skip if we just reloaded (debouncer can send multiple batches for one save)
+                if last_reload.elapsed() < Duration::from_millis(500) {
+                    continue;
+                }
+                last_reload = Instant::now();
 
                 if state.doc_mode {
                     if let Some(ref path) = state.doc_path {

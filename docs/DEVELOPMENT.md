@@ -4,7 +4,7 @@
 
 - **Language:** Rust
 - **Terminal:** Kitty (graphics protocol, raw RGB f=24, double-buffered)
-- **Key crates:** `image`, `base64`, `crossterm`, `pulldown-cmark`, `ab_glyph`, `imageproc`
+- **Key crates:** `image`, `base64`, `crossterm`, `pulldown-cmark`, `ab_glyph`, `imageproc`, `notify-debouncer-mini`
 - **Fonts:** DejaVu Sans (regular, bold, oblique) + DejaVu Sans Mono
 
 ## Architecture
@@ -47,3 +47,4 @@ The file docs/sample.md can be used for manual testing
 - [x] Task 9: File browser mode with two-pane layout
 - [x] Task 10: TOML configuration file support (theme, layout, fonts)
 - [x] Task 11: Source file viewing with syntax highlighting (syntect)
+- [x] Task 12: File watcher for auto-reload on external edits (notify-debouncer-mini)
