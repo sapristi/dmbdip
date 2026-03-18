@@ -549,11 +549,13 @@ pub(crate) fn run_browser(
                                         ds.scroll_y,
                                         ds.current_heading,
                                         ds.headings.iter().map(|h| h.folded).collect::<Vec<_>>(),
+                                        ds.frame,
                                     )),
                                     _ => None,
                                 };
                                 let mut new_ds = AppState::new(&content, fonts, cur_w, vp_height, *theme, *layout);
-                                if let Some((scroll, heading, folded)) = saved_scroll {
+                                if let Some((scroll, heading, folded, old_frame)) = saved_scroll {
+                                    new_ds.frame = old_frame;
                                     new_ds.scroll_y = scroll.min(new_ds.max_scroll());
                                     new_ds.current_heading = heading;
                                     for (i, &f) in folded.iter().enumerate() {
@@ -574,12 +576,15 @@ pub(crate) fn run_browser(
                                 )?;
                                 state.doc_state = Some(DocContent::Markdown(new_ds));
                             } else {
-                                let saved_scroll = match &state.doc_state {
-                                    Some(DocContent::Source(ss)) => Some(ss.scroll_y),
-                                    _ => None,
+                                let (saved_scroll, saved_frame) = match &state.doc_state {
+                                    Some(DocContent::Source(ss)) => (Some(ss.scroll_y), Some(ss.frame)),
+                                    _ => (None, None),
                                 };
                                 let ext = file_extension(&file_name);
                                 let mut new_ss = SourceViewState::new(&content, &ext, fonts, cur_w, vp_height, *theme, *layout);
+                                if let Some(frame) = saved_frame {
+                                    new_ss.frame = frame;
+                                }
                                 if let Some(scroll) = saved_scroll {
                                     new_ss.scroll_y = scroll.min(new_ss.max_scroll());
                                 }

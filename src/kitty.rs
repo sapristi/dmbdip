@@ -19,6 +19,8 @@ pub(crate) fn kitty_display_raw(
     let bytes = b64.as_bytes();
     let total_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
 
+    // Begin synchronized output to prevent flicker
+    write!(w, "\x1b[?2026h")?;
     write!(w, "\x1b[H")?;
 
     for (i, chunk) in bytes.chunks(chunk_size).enumerate() {
@@ -37,6 +39,8 @@ pub(crate) fn kitty_display_raw(
     }
 
     write!(w, "\x1b_Ga=d,d=I,i={old_id},q=2\x1b\\")?;
+    // End synchronized output
+    write!(w, "\x1b[?2026l")?;
 
     w.flush()
 }
@@ -164,6 +168,8 @@ fn kitty_display_at(
     let bytes = b64.as_bytes();
     let total_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
 
+    // Begin synchronized output to prevent flicker
+    write!(w, "\x1b[?2026h")?;
     write!(w, "\x1b[1;{}H", col + 1)?;
 
     for (i, chunk) in bytes.chunks(chunk_size).enumerate() {
@@ -182,6 +188,8 @@ fn kitty_display_at(
     }
 
     write!(w, "\x1b_Ga=d,d=I,i={old_id},q=2\x1b\\")?;
+    // End synchronized output
+    write!(w, "\x1b[?2026l")?;
     w.flush()
 }
 
