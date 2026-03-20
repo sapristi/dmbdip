@@ -1,8 +1,9 @@
 name: Release
 
 on:
-  release:
-    types: [created]
+  push:
+    tags:
+      - "v*"
 
 permissions:
   contents: write
@@ -34,13 +35,13 @@ jobs:
       - name: Package binary
         run: |
           cd target/release
-          tar czf ../../dmbdip-${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz dmbdip
+          tar czf ../../dmbdip-${{ github.ref_name }}-${{ matrix.target }}.tar.gz dmbdip
           cd ../..
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2.5.0
         with:
-          files: dmbdip-${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz
+          files: dmbdip-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
 
   publish:
     name: Publish to crates.io

@@ -11,6 +11,10 @@ read README.md and docs/DEVELOPMENT.md
 - Evaluate quality every few commits and after fixing bugs
 - Don't include Co-authored by in the commit message.
 
-## Relase
+## Release
 
-When preparing a release, run  `git fetch` first to pull remote tags
+1. Run `git fetch` to pull remote tags
+2. Go to GitHub Actions → "Prepare Release" → Run workflow
+3. Enter the new version (semver, e.g. `0.5.0`)
+
+This automatically bumps `Cargo.toml`, commits, tags, and triggers the release workflow which builds binaries, creates a GitHub release, and publishes to crates.io.
