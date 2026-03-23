@@ -21,6 +21,7 @@ mod test_helpers;
 
 use std::io;
 use std::path::Path;
+use std::time::Instant;
 
 use config::{build_theme, debug_config, load_config};
 use constants::{LayoutParams, KEYBINDINGS, BROWSER_KEYBINDINGS};
@@ -29,20 +30,23 @@ use kitty::{detect_graphics_support, get_viewport_pixel_size};
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    let debug = args.iter().any(|a| a == "--debug");
 
-    if args.get(1).map(|s| s.as_str()) == Some("--debug-config") {
+    if args.iter().any(|a| a == "--debug-config") {
         let config = load_config();
         debug_config(&config);
         std::process::exit(0);
     }
 
-    if args.get(1).map(|s| s.as_str()) == Some("--help")
-        || args.get(1).map(|s| s.as_str()) == Some("-h")
-    {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
         eprintln!("dmbdip - Display Markdown But Do it Pretty");
         eprintln!();
-        eprintln!("Usage: dmbdip [markdown-file-or-directory]");
-        eprintln!("       dmbdip --debug-config");
+        eprintln!("Usage: dmbdip [OPTIONS] [markdown-file-or-directory]");
+        eprintln!();
+        eprintln!("Options:");
+        eprintln!("  --debug              Enable debug output");
+        eprintln!("  --debug-config       Print resolved configuration and exit");
+        eprintln!("  -h, --help           Show this help message");
         eprintln!();
         eprintln!("Renders markdown files as images in the terminal using the Kitty");
         eprintln!("graphics protocol. Always opens in browser mode with a file list");
@@ -61,13 +65,27 @@ fn main() -> io::Result<()> {
         std::process::exit(0);
     }
 
-    if !detect_graphics_support() {
+    let start = Instant::now();
+    let supported = detect_graphics_support();
+    let elapsed = start.elapsed();
+
+    if debug {
+        eprintln!("[debug] graphics protocol detection: {} in {:.1}ms",
+            if supported { "supported" } else { "not supported" },
+            elapsed.as_secs_f64() * 1000.0);
+    }
+
+    if !supported {
         eprintln!("Error: your terminal does not support the Kitty graphics protocol.");
         eprintln!("dmbdip requires a compatible terminal (e.g. Kitty, WezTerm, Ghostty).");
         std::process::exit(1);
     }
 
-    let file_path = args.get(1).map(|s| s.as_str()).unwrap_or(".");
+    let file_path = args.iter()
+        .skip(1)
+        .find(|a| !a.starts_with("--"))
+        .map(|s| s.as_str())
+        .unwrap_or(".");
     let path = Path::new(file_path);
 
     let config = load_config();
