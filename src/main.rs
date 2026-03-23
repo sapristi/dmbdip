@@ -25,7 +25,7 @@ use std::path::Path;
 use config::{build_theme, debug_config, load_config};
 use constants::{LayoutParams, KEYBINDINGS, BROWSER_KEYBINDINGS};
 use fonts::load_fonts;
-use kitty::get_viewport_pixel_size;
+use kitty::{detect_graphics_support, get_viewport_pixel_size};
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -59,6 +59,12 @@ fn main() -> io::Result<()> {
             eprintln!("  {:<20} {}", key, desc);
         }
         std::process::exit(0);
+    }
+
+    if !detect_graphics_support() {
+        eprintln!("Error: your terminal does not support the Kitty graphics protocol.");
+        eprintln!("dmbdip requires a compatible terminal (e.g. Kitty, WezTerm, Ghostty).");
+        std::process::exit(1);
     }
 
     let file_path = args.get(1).map(|s| s.as_str()).unwrap_or(".");

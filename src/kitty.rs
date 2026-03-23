@@ -1,9 +1,59 @@
 use base64::Engine;
 use image::RgbImage;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::time::Duration;
 
 use crate::constants::CURSOR_WIDTH;
 use crossterm::terminal;
+
+/// Query the terminal for Kitty graphics protocol support.
+/// Sends a 1x1 pixel query image and checks if the terminal responds with OK.
+pub(crate) fn detect_graphics_support() -> bool {
+    match try_detect_graphics() {
+        Ok(supported) => supported,
+        Err(_) => false,
+    }
+}
+
+fn try_detect_graphics() -> io::Result<bool> {
+    let was_raw = terminal::is_raw_mode_enabled()?;
+    if !was_raw {
+        terminal::enable_raw_mode()?;
+    }
+
+    let mut stdout = io::stdout();
+    // Send a query action with a 1x1 transparent pixel (3 bytes RGB = "AAAA" in base64)
+    write!(stdout, "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\")?;
+    stdout.flush()?;
+
+    // Read response with timeout
+    let mut buf = [0u8; 64];
+    let mut response = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+
+    while std::time::Instant::now() < deadline {
+        if crossterm::event::poll(Duration::from_millis(50))? {
+            // Read raw bytes from stdin
+            let stdin = io::stdin();
+            let mut handle = stdin.lock();
+            match handle.read(&mut buf) {
+                Ok(n) if n > 0 => response.extend_from_slice(&buf[..n]),
+                _ => break,
+            }
+            // Check if we got a complete response
+            if response.windows(2).any(|w| w == b"\x1b\\") {
+                break;
+            }
+        }
+    }
+
+    if !was_raw {
+        terminal::disable_raw_mode()?;
+    }
+
+    let resp_str = String::from_utf8_lossy(&response);
+    Ok(resp_str.contains("OK"))
+}
 
 pub(crate) fn kitty_display_raw(
     w: &mut impl Write,
