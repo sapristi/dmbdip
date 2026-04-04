@@ -36,7 +36,7 @@ pub(crate) fn render_preview(
 
         match block {
             Block::Metadata { entries } => {
-                y = render_metadata(&mut img, entries, fonts, theme, y, margin_left + layout.block_indent);
+                y = render_metadata(&mut img, entries, fonts, theme, y, margin_left + layout.block_indent, content_width - layout.block_indent);
                 y += layout.paragraph_gap * 2;
             }
             Block::Heading { level, spans } => {
@@ -139,7 +139,7 @@ pub(crate) fn render_markdown(
 
         match block {
             Block::Metadata { entries } => {
-                y = render_metadata(&mut img, entries, fonts, theme, y, margin_left + layout.block_indent);
+                y = render_metadata(&mut img, entries, fonts, theme, y, margin_left + layout.block_indent, content_width - layout.block_indent);
                 y += layout.paragraph_gap * 2;
             }
             Block::Heading { level, spans } => {
@@ -281,8 +281,13 @@ fn compute_total_height(
 
         match block {
             Block::Metadata { entries } => {
+                let scale = PxScale::from(theme.body_size);
                 let line_height = (theme.body_size * 1.5) as u32;
-                h += entries.len() as u32 * line_height + layout.paragraph_gap * 2;
+                let indented_width = content_width - layout.block_indent;
+                let total_lines: u32 = entries.iter().map(|(k, v)| {
+                    metadata_entry_lines(k, v, fonts, scale, indented_width).len() as u32
+                }).sum();
+                h += total_lines * line_height + layout.paragraph_gap * 2;
             }
             Block::Heading { level, spans } => {
                 if matches!(level, HeadingLevel::H1) && h > layout.paragraph_gap {
@@ -324,6 +329,48 @@ fn compute_total_height(
     h + layout.paragraph_gap + vp_height / 2
 }
 
+fn wrap_plain_text(text: &str, font: &ab_glyph::FontVec, scale: PxScale, max_width: u32) -> Vec<String> {
+    let space_w = text_size(scale, font, " ").0;
+    let mut lines: Vec<String> = Vec::new();
+    let mut current_line = String::new();
+    let mut current_width: u32 = 0;
+
+    for word in text.split_whitespace() {
+        let word_w = text_size(scale, font, word).0;
+        let needed = if current_line.is_empty() { 0 } else { space_w } + word_w;
+        if !current_line.is_empty() && current_width + needed > max_width {
+            lines.push(std::mem::take(&mut current_line));
+            current_width = 0;
+        }
+        if !current_line.is_empty() {
+            current_line.push(' ');
+            current_width += space_w;
+        }
+        current_line.push_str(word);
+        current_width += word_w;
+    }
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn metadata_entry_lines(
+    key: &str,
+    val: &str,
+    fonts: &Fonts,
+    scale: PxScale,
+    content_width: u32,
+) -> Vec<String> {
+    let key_text = format!("{}: ", key);
+    let key_w = text_size(scale, &fonts.bold, &key_text).0;
+    let val_width = content_width.saturating_sub(key_w);
+    wrap_plain_text(val, &fonts.regular, scale, val_width)
+}
+
 fn render_metadata(
     img: &mut RgbImage,
     entries: &[(String, String)],
@@ -331,6 +378,7 @@ fn render_metadata(
     theme: &Theme,
     start_y: u32,
     margin_left: u32,
+    content_width: u32,
 ) -> u32 {
     let scale = PxScale::from(theme.body_size);
     let line_height = (theme.body_size * 1.5) as u32;
@@ -339,6 +387,8 @@ fn render_metadata(
     for (key, val) in entries {
         let key_text = format!("{}: ", key);
         let key_w = text_size(scale, &fonts.bold, &key_text).0;
+        let val_lines = metadata_entry_lines(key, val, fonts, scale, content_width);
+
         draw_text_mut(
             img,
             theme.meta_key_color,
@@ -348,16 +398,19 @@ fn render_metadata(
             &fonts.bold,
             &key_text,
         );
-        draw_text_mut(
-            img,
-            theme.meta_val_color,
-            (margin_left + key_w) as i32,
-            y as i32,
-            scale,
-            &fonts.regular,
-            val,
-        );
-        y += line_height;
+
+        for line in &val_lines {
+            draw_text_mut(
+                img,
+                theme.meta_val_color,
+                (margin_left + key_w) as i32,
+                y as i32,
+                scale,
+                &fonts.regular,
+                line,
+            );
+            y += line_height;
+        }
     }
 
     y
