@@ -16,6 +16,8 @@ pub(crate) fn detect_graphics_support() -> bool {
 }
 
 fn try_detect_graphics() -> io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+
     let was_raw = terminal::is_raw_mode_enabled()?;
     if !was_raw {
         terminal::enable_raw_mode()?;
@@ -26,19 +28,32 @@ fn try_detect_graphics() -> io::Result<bool> {
     write!(stdout, "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\")?;
     stdout.flush()?;
 
-    // Read response with timeout
+    // Read response with timeout using poll(2) on stdin directly,
+    // avoiding crossterm's event system which can consume the response.
+    let stdin_fd = io::stdin().as_raw_fd();
     let mut buf = [0u8; 64];
     let mut response = Vec::new();
     let deadline = std::time::Instant::now() + Duration::from_millis(500);
 
+    // Set stdin to non-blocking
+    let flags = unsafe { libc::fcntl(stdin_fd, libc::F_GETFL) };
+    unsafe { libc::fcntl(stdin_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+
     while std::time::Instant::now() < deadline {
-        if crossterm::event::poll(Duration::from_millis(50))? {
-            // Read raw bytes from stdin
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let timeout_ms = remaining.as_millis().min(50) as i32;
+        let mut pfd = libc::pollfd {
+            fd: stdin_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ret = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+        if ret > 0 {
             let stdin = io::stdin();
             let mut handle = stdin.lock();
             match handle.read(&mut buf) {
                 Ok(n) if n > 0 => response.extend_from_slice(&buf[..n]),
-                _ => break,
+                _ => {}
             }
             // Check if we got a complete response
             if response.windows(2).any(|w| w == b"\x1b\\") {
@@ -46,6 +61,9 @@ fn try_detect_graphics() -> io::Result<bool> {
             }
         }
     }
+
+    // Restore blocking mode
+    unsafe { libc::fcntl(stdin_fd, libc::F_SETFL, flags) };
 
     if !was_raw {
         terminal::disable_raw_mode()?;
