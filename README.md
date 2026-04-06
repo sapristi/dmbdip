@@ -47,6 +47,12 @@ The binary will be at `target/release/dmbdip`. Copy it to a directory in your `$
 cp target/release/dmbdip ~/.local/bin/
 ```
 
+Or install directly with cargo:
+
+```
+cargo install --path . --root ~/.local
+```
+
 ## Keybindings
 
 ### Document View
