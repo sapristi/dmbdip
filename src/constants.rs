@@ -81,6 +81,7 @@ pub(crate) const BROWSER_KEYBINDINGS: &[(&str, &str)] = &[
     ("Right / Enter", "Open file or enter directory"),
     ("Left", "Go to parent directory"),
     ("e", "Open in $EDITOR"),
+    ("Ctrl-H", "Toggle hidden files"),
     ("h", "Show this help"),
     ("q / Esc / Ctrl-C", "Quit"),
 ];

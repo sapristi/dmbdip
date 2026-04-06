@@ -32,13 +32,13 @@ enum BrowserEntry {
     File(String),
 }
 
-fn scan_directory(dir: &Path, extra_extensions: &[String]) -> Vec<BrowserEntry> {
+fn scan_directory(dir: &Path, extra_extensions: &[String], show_hidden: bool) -> Vec<BrowserEntry> {
     let mut dirs = Vec::new();
     let mut files = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
+            if !show_hidden && name.starts_with('.') {
                 continue;
             }
             if let Ok(ft) = entry.file_type() {
@@ -137,6 +137,7 @@ struct BrowserState {
     position_cache: HashMap<PathBuf, SavedPosition>,
     file_list_visible: bool,
     extra_extensions: Vec<String>,
+    show_hidden: bool,
 }
 
 const BROWSER_LEFT_COLS: u16 = 35;
@@ -305,7 +306,7 @@ pub(crate) fn run_browser(
 ) -> io::Result<()> {
     let (_term_cols, mut term_rows) = terminal::size()?;
     let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    let entries = scan_directory(&canonical_dir, extra_extensions);
+    let entries = scan_directory(&canonical_dir, extra_extensions, false);
 
     let mut state = BrowserState {
         current_dir: canonical_dir,
@@ -319,6 +320,7 @@ pub(crate) fn run_browser(
         position_cache: HashMap::new(),
         file_list_visible: initial_file.is_none(),
         extra_extensions: extra_extensions.to_vec(),
+        show_hidden: false,
     };
 
     let mut smooth_scroll = SmoothScroll::new();
@@ -1138,7 +1140,7 @@ pub(crate) fn run_browser(
                         match state.entries.get(state.cursor).cloned() {
                             Some(BrowserEntry::Dir(name)) => {
                                 let new_dir = state.current_dir.join(&name);
-                                state.entries = scan_directory(&new_dir, &state.extra_extensions);
+                                state.entries = scan_directory(&new_dir, &state.extra_extensions, state.show_hidden);
                                 state.current_dir = new_dir.canonicalize().unwrap_or(new_dir);
                                 state.cursor = 0;
                                 state.doc_state = None;
@@ -1209,7 +1211,7 @@ pub(crate) fn run_browser(
                     (KeyCode::Left, _) => {
                         if let Some(parent) = state.current_dir.parent() {
                             let parent = parent.to_path_buf();
-                            state.entries = scan_directory(&parent, &state.extra_extensions);
+                            state.entries = scan_directory(&parent, &state.extra_extensions, state.show_hidden);
                             state.current_dir = parent.canonicalize().unwrap_or(parent);
                             state.cursor = 0;
                             state.doc_state = None;
@@ -1227,6 +1229,15 @@ pub(crate) fn run_browser(
                             continue;
                         }
                         false
+                    }
+                    (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
+                        state.show_hidden = !state.show_hidden;
+                        state.entries = scan_directory(&state.current_dir, &state.extra_extensions, state.show_hidden);
+                        state.cursor = state.cursor.min(state.entries.len().saturating_sub(1));
+                        state.preview_cache.clear();
+                        let mut out = BufWriter::new(stdout.lock());
+                        browser_clear_preview(&mut out)?;
+                        true
                     }
                     (KeyCode::Char('h'), _) => {
                         let help_img = render_help_overlay_with(

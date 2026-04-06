@@ -74,6 +74,7 @@ cp target/release/dmbdip ~/.local/bin/
 | Right/Enter | Open file / enter subfolder |
 | Left | Go to parent directory |
 | e | Open in $EDITOR |
+| Ctrl-H | Toggle hidden files |
 | h | Show help |
 | q/Esc/Ctrl-C | Quit |
 
