@@ -20,48 +20,76 @@ mod types;
 mod test_helpers;
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use config::{build_theme, debug_config, load_config};
-use constants::{LayoutParams, KEYBINDINGS, BROWSER_KEYBINDINGS};
+use constants::LayoutParams;
 use fonts::load_fonts;
 use kitty::{detect_graphics_support, get_viewport_pixel_size};
 
-fn main() -> io::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    let debug = args.iter().any(|a| a == "--debug");
+struct Args {
+    debug: bool,
+    debug_config: bool,
+    path: PathBuf,
+}
 
-    if args.iter().any(|a| a == "--debug-config") {
-        let config = load_config();
-        debug_config(&config);
-        std::process::exit(0);
+fn print_help() {
+    eprintln!("dmbdip - Display Markdown But Do it Pretty");
+    eprintln!();
+    eprintln!("Usage: dmbdip [OPTIONS] [markdown-file-or-directory]");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  --debug              Enable debug output");
+    eprintln!("  --debug-config       Print resolved configuration and exit");
+    eprintln!("  -v, --version        Show version");
+    eprintln!("  -h, --help           Show this help message");
+    eprintln!();
+    eprintln!("Renders markdown files as images in the terminal using the Kitty");
+    eprintln!("graphics protocol. Always opens in browser mode with a file list");
+    eprintln!("on the left. When given a file, opens it directly with the file");
+    eprintln!("list hidden.");
+    eprintln!();
+    eprintln!("Press 'h' in the app to view keybindings.");
+}
+
+fn parse_args() -> Result<Args, lexopt::Error> {
+    use lexopt::prelude::*;
+
+    let mut debug = false;
+    let mut debug_config = false;
+    let mut path = PathBuf::from(".");
+    let mut parser = lexopt::Parser::from_env();
+
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Short('h') | Long("help") => {
+                print_help();
+                std::process::exit(0);
+            }
+            Short('v') | Long("version") => {
+                eprintln!("dmbdip {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            Long("debug") => debug = true,
+            Long("debug-config") => debug_config = true,
+            Value(val) => path = PathBuf::from(val),
+            _ => return Err(arg.unexpected()),
+        }
     }
 
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        eprintln!("dmbdip - Display Markdown But Do it Pretty");
-        eprintln!();
-        eprintln!("Usage: dmbdip [OPTIONS] [markdown-file-or-directory]");
-        eprintln!();
-        eprintln!("Options:");
-        eprintln!("  --debug              Enable debug output");
-        eprintln!("  --debug-config       Print resolved configuration and exit");
-        eprintln!("  -h, --help           Show this help message");
-        eprintln!();
-        eprintln!("Renders markdown files as images in the terminal using the Kitty");
-        eprintln!("graphics protocol. Always opens in browser mode with a file list");
-        eprintln!("on the left. When given a file, opens it directly with the file");
-        eprintln!("list hidden.");
-        eprintln!();
-        eprintln!("Keybindings (document view):");
-        for &(key, desc) in KEYBINDINGS {
-            eprintln!("  {:<20} {}", key, desc);
-        }
-        eprintln!();
-        eprintln!("Keybindings (file browser):");
-        for &(key, desc) in BROWSER_KEYBINDINGS {
-            eprintln!("  {:<20} {}", key, desc);
-        }
+    Ok(Args { debug, debug_config, path })
+}
+
+fn main() -> io::Result<()> {
+    let args = parse_args().unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(2);
+    });
+
+    if args.debug_config {
+        let config = load_config();
+        debug_config(&config);
         std::process::exit(0);
     }
 
@@ -69,7 +97,7 @@ fn main() -> io::Result<()> {
     let supported = detect_graphics_support();
     let elapsed = start.elapsed();
 
-    if debug {
+    if args.debug {
         eprintln!("[debug] graphics protocol detection: {} in {:.1}ms",
             if supported { "supported" } else { "not supported" },
             elapsed.as_secs_f64() * 1000.0);
@@ -81,12 +109,7 @@ fn main() -> io::Result<()> {
         std::process::exit(1);
     }
 
-    let file_path = args.iter()
-        .skip(1)
-        .find(|a| !a.starts_with("--"))
-        .map(|s| s.as_str())
-        .unwrap_or(".");
-    let path = Path::new(file_path);
+    let path = &args.path;
 
     let config = load_config();
     let theme = build_theme(&config.theme);
