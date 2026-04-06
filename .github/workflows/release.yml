@@ -50,6 +50,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y fonts-dejavu libfontconfig1-dev
       - name: Publish
         run: cargo publish
         env:
