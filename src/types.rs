@@ -72,6 +72,9 @@ pub(crate) enum Block {
     List {
         items: Vec<ListItem>,
     },
+    Mermaid {
+        source: String,
+    },
 }
 
 #[derive(Clone)]

@@ -102,6 +102,7 @@ pub(crate) fn render_preview(
                 y = render_list(&mut img, items, fonts, theme, y, content_width, margin_left, layout);
                 y += layout.paragraph_gap;
             }
+            Block::Mermaid { .. } => {}
         }
     }
 
@@ -216,6 +217,7 @@ pub(crate) fn render_markdown(
                 y = render_list(&mut img, items, fonts, theme, y, content_width, margin_left, layout);
                 y += layout.paragraph_gap;
             }
+            Block::Mermaid { .. } => {}
         }
     }
 
@@ -323,6 +325,7 @@ fn compute_total_height(
                 h += compute_list_height(items, fonts, theme, content_width, layout);
                 h += layout.paragraph_gap;
             }
+            Block::Mermaid { .. } => {}
         }
     }
 

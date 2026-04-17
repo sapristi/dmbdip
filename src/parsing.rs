@@ -1,4 +1,4 @@
-use pulldown_cmark::{Event as MdEvent, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event as MdEvent, Options, Parser, Tag, TagEnd};
 
 use crate::types::{Block, ListItem, ListMarker, Span, SpanStyle};
 
@@ -74,6 +74,7 @@ pub(crate) fn parse_markdown(full_source: &str) -> (Vec<Block>, Vec<usize>) {
 
     let mut in_code_block = false;
     let mut code_text = String::new();
+    let mut code_lang: Option<String> = None;
     let mut block_start_offset: usize = 0;
 
     let mut list_stack: Vec<ListMarker> = Vec::new();
@@ -124,16 +125,31 @@ pub(crate) fn parse_markdown(full_source: &str) -> (Vec<Block>, Vec<usize>) {
             MdEvent::End(TagEnd::Emphasis) => {
                 style_stack.pop();
             }
-            MdEvent::Start(Tag::CodeBlock(_)) => {
+            MdEvent::Start(Tag::CodeBlock(kind)) => {
                 in_code_block = true;
                 code_text.clear();
+                code_lang = match &kind {
+                    CodeBlockKind::Fenced(info) => Some(info.to_string()),
+                    CodeBlockKind::Indented => None,
+                };
                 block_start_offset = range.start;
             }
             MdEvent::End(TagEnd::CodeBlock) => {
                 in_code_block = false;
-                blocks.push(Block::CodeBlock {
-                    text: std::mem::take(&mut code_text),
-                });
+                let text = std::mem::take(&mut code_text);
+                let lang = code_lang
+                    .take()
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let block = if lang == "mermaid" || lang == "mmd" {
+                    Block::Mermaid { source: text }
+                } else {
+                    Block::CodeBlock { text }
+                };
+                blocks.push(block);
                 block_source_lines.push(byte_to_line(source_offset + block_start_offset));
             }
             MdEvent::Code(code) => {
@@ -407,5 +423,49 @@ mod tests {
         assert_eq!(blocks.len(), lines.len());
         assert_eq!(lines[0], 1); // Metadata at line 1
         assert_eq!(lines[1], 4); // # Heading at line 4
+    }
+
+    #[test]
+    fn parse_mermaid_block_by_language_tag() {
+        let md = "```mermaid\nflowchart LR; A-->B\n```\n";
+        let (blocks, _) = parse_markdown(md);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], Block::Mermaid { source } if source.contains("flowchart LR")));
+    }
+
+    #[test]
+    fn parse_mmd_alias_becomes_mermaid_block() {
+        let md = "```mmd\nflowchart TD; X-->Y\n```\n";
+        let (blocks, _) = parse_markdown(md);
+        assert!(matches!(&blocks[0], Block::Mermaid { .. }));
+    }
+
+    #[test]
+    fn parse_non_mermaid_fence_stays_code_block() {
+        let md = "```rust\nfn main() {}\n```\n";
+        let (blocks, _) = parse_markdown(md);
+        assert!(matches!(&blocks[0], Block::CodeBlock { .. }));
+    }
+
+    #[test]
+    fn parse_mermaid_lang_is_case_insensitive() {
+        let md = "```MERMAID\nflowchart LR; A-->B\n```\n";
+        let (blocks, _) = parse_markdown(md);
+        assert!(matches!(&blocks[0], Block::Mermaid { .. }));
+    }
+
+    #[test]
+    fn parse_mermaid_lang_ignores_trailing_attrs() {
+        let md = "```mermaid title=foo\nflowchart LR; A-->B\n```\n";
+        let (blocks, _) = parse_markdown(md);
+        assert!(matches!(&blocks[0], Block::Mermaid { .. }));
+    }
+
+    #[test]
+    fn parse_indented_code_block_stays_code_block() {
+        // Four-space indent → pulldown-cmark emits CodeBlockKind::Indented (no info string).
+        let md = "    fn main() {}\n";
+        let (blocks, _) = parse_markdown(md);
+        assert!(matches!(&blocks[0], Block::CodeBlock { .. }));
     }
 }

@@ -292,6 +292,7 @@ fn block_contains_text(block: &Block, query: &str) -> bool {
         Block::List { items } => items.iter().any(|item| {
             spans_to_plain(&item.spans).to_lowercase().contains(query)
         }),
+        Block::Mermaid { source } => source.to_lowercase().contains(query),
     }
 }
 
@@ -420,6 +421,7 @@ fn compute_block_highlights(
                 }
             }
         }
+        Block::Mermaid { .. } => {}
         _ => {}
     }
     highlights
