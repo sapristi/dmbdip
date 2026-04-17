@@ -41,13 +41,7 @@ Requires Rust (1.85+ for edition 2024). Install via [rustup](https://rustup.rs/)
 cargo build --release
 ```
 
-The binary will be at `target/release/dmbdip`. Copy it to a directory in your `$PATH`:
-
-```
-cp target/release/dmbdip ~/.local/bin/
-```
-
-Or install directly with cargo:
+Install directly with cargo:
 
 ```
 cargo install --path . --root ~/.local
