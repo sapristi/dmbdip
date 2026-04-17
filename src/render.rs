@@ -256,13 +256,39 @@ pub(crate) fn render_markdown(
 
 pub(crate) fn wrap_code_lines(text: &str, fonts: &Fonts, scale: PxScale, inner_width: u32) -> Vec<Vec<Vec<Span>>> {
     text.lines()
-        .map(|line| {
-            wrap_spans(
-                &[Span { text: line.to_string(), style: SpanStyle::Code }],
-                fonts, scale, inner_width,
-            )
-        })
+        .map(|line| wrap_code_line(line, fonts, scale, inner_width))
         .collect()
+}
+
+fn wrap_code_line(line: &str, fonts: &Fonts, scale: PxScale, max_width: u32) -> Vec<Vec<Span>> {
+    if line.is_empty() {
+        return vec![vec![Span { text: String::new(), style: SpanStyle::Code }]];
+    }
+
+    let full_w = text_size(scale, &fonts.mono, line).0;
+    if full_w <= max_width {
+        return vec![vec![Span { text: line.to_string(), style: SpanStyle::Code }]];
+    }
+
+    // Character-wrap, preserving whitespace exactly.
+    let mut out: Vec<Vec<Span>> = Vec::new();
+    let mut current = String::new();
+    let mut current_w: u32 = 0;
+    let mut buf = [0u8; 4];
+    for ch in line.chars() {
+        let s = ch.encode_utf8(&mut buf);
+        let w = text_size(scale, &fonts.mono, s).0;
+        if current_w > 0 && current_w + w > max_width {
+            out.push(vec![Span { text: std::mem::take(&mut current), style: SpanStyle::Code }]);
+            current_w = 0;
+        }
+        current.push(ch);
+        current_w += w;
+    }
+    if !current.is_empty() {
+        out.push(vec![Span { text: current, style: SpanStyle::Code }]);
+    }
+    out
 }
 
 pub(crate) fn wrap_heading_text(
@@ -851,6 +877,35 @@ mod tests {
             "doc with mermaid ({}) should be taller than without ({})",
             img2.height(), img1.height(),
         );
+    }
+
+    #[test]
+    fn wrap_code_lines_preserves_internal_whitespace() {
+        let fonts = test_fonts();
+        let scale = PxScale::from(18.0);
+        // Wide enough that the line fits and no wrapping is needed.
+        let wrapped = wrap_code_lines("a    b", &fonts, scale, 5000);
+        assert_eq!(wrapped.len(), 1, "one source line");
+        assert_eq!(wrapped[0].len(), 1, "should not soft-wrap a short line");
+        let rebuilt: String = wrapped[0][0].iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(rebuilt, "a    b", "multiple internal spaces must be preserved");
+    }
+
+    #[test]
+    fn wrap_code_lines_preserves_indent_and_trailing_spaces() {
+        let fonts = test_fonts();
+        let scale = PxScale::from(18.0);
+        let wrapped = wrap_code_lines("    indented   ", &fonts, scale, 5000);
+        let rebuilt: String = wrapped[0][0].iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(rebuilt, "    indented   ");
+    }
+
+    #[test]
+    fn wrap_code_lines_keeps_blank_lines() {
+        let fonts = test_fonts();
+        let scale = PxScale::from(18.0);
+        let wrapped = wrap_code_lines("a\n\nb", &fonts, scale, 5000);
+        assert_eq!(wrapped.len(), 3, "three source lines including the blank");
     }
 
     #[test]
