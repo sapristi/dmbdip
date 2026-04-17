@@ -4,12 +4,12 @@
 
 - **Language:** Rust
 - **Terminal:** Kitty (graphics protocol, raw RGB f=24, double-buffered)
-- **Key crates:** `image`, `base64`, `crossterm`, `pulldown-cmark`, `ab_glyph`, `imageproc`, `notify-debouncer-mini`
+- **Key crates:** `image`, `base64`, `crossterm`, `pulldown-cmark`, `ab_glyph`, `imageproc`, `notify-debouncer-mini`, `mermaid-rs-renderer`, `resvg`, `usvg`
 - **Fonts:** DejaVu Sans (regular, bold, oblique) + DejaVu Sans Mono
 
 ## Architecture
 
-- Parse markdown into `Vec<Block>` (Heading, Paragraph, CodeBlock, Table, Metadata)
+- Parse markdown into `Vec<Block>` (Heading, Paragraph, CodeBlock, Table, Metadata, List, Mermaid)
 - Inline text uses `Vec<Span>` with styles: Normal, Bold, Italic, Code
 - `HeadingInfo` tracks each heading's position, number, fold state
 - `AppState` manages blocks, headings, cursor, scroll, fold, search state
@@ -48,3 +48,4 @@ The file docs/sample.md can be used for manual testing
 - [x] Task 10: TOML configuration file support (theme, layout, fonts)
 - [x] Task 11: Source file viewing with syntax highlighting (syntect)
 - [x] Task 12: File watcher for auto-reload on external edits (notify-debouncer-mini)
+- [x] Task 13: Mermaid diagram rendering via mermaid-rs-renderer (auto dark/light, in-memory cache)

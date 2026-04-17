@@ -81,3 +81,16 @@ Some more text after the table to verify that layout continues correctly after t
 ## Final Section
 
 The end of the document. This demonstrates scrolling with real markdown content including **bold**, *italic*, and `code` formatting.
+
+## Mermaid Diagrams
+
+Fenced blocks with the `mermaid` or `mmd` language tag are rendered as diagrams.
+
+```mermaid
+flowchart LR
+    A[Input] --> B{Decision}
+    B -->|Yes| C[Render]
+    B -->|No| D[Skip]
+    C --> E[Done]
+    D --> E
+```
