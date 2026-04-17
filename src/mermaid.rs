@@ -68,6 +68,48 @@ pub(crate) fn render_mermaid_svg(source: &str, dark: bool) -> Result<String, Str
         .map_err(|e| e.to_string())
 }
 
+pub(crate) fn rasterize_svg_to_rgb(
+    svg: &str,
+    max_width: u32,
+    bg: Rgb<u8>,
+) -> Result<RgbImage, String> {
+    let mut opt = usvg::Options::default();
+    opt.fontdb_mut().load_system_fonts();
+
+    let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| e.to_string())?;
+
+    let size = tree.size();
+    let intrinsic_w = size.width();
+    let intrinsic_h = size.height();
+    if intrinsic_w <= 0.0 || intrinsic_h <= 0.0 {
+        return Err("SVG has zero intrinsic size".into());
+    }
+
+    let scale = if intrinsic_w > max_width as f32 {
+        max_width as f32 / intrinsic_w
+    } else {
+        1.0
+    };
+    let out_w = (intrinsic_w * scale).round().max(1.0) as u32;
+    let out_h = (intrinsic_h * scale).round().max(1.0) as u32;
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(out_w, out_h)
+        .ok_or_else(|| "failed to allocate pixmap".to_string())?;
+    pixmap.fill(resvg::tiny_skia::Color::from_rgba8(bg.0[0], bg.0[1], bg.0[2], 255));
+
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    // The pixmap was pre-filled with opaque `bg` before rendering, so every pixel
+    // has alpha=255 (premultiplied RGB == straight RGB). Copy the channels directly.
+    let mut img = RgbImage::new(out_w, out_h);
+    for (dst, px) in img.pixels_mut().zip(pixmap.pixels().iter()) {
+        *dst = Rgb([px.red(), px.green(), px.blue()]);
+    }
+
+    Ok(img)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,4 +158,40 @@ mod tests {
         assert_ne!(light, dark, "dark and light SVGs should differ");
     }
 
+    const TINY_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50" viewBox="0 0 100 50"><rect width="100" height="50" fill="red"/></svg>"#;
+
+    #[test]
+    fn rasterize_small_svg_at_intrinsic_size() {
+        let bg = Rgb([255, 255, 255]);
+        let img = rasterize_svg_to_rgb(TINY_SVG, 800, bg).unwrap();
+        // Interior pixel should be fully red (fill="red" on a 100x50 rect with white bg).
+        let p = img.get_pixel(50, 25);
+        assert_eq!(*p, Rgb([255, 0, 0]), "center pixel should be red, got {:?}", p);
+        assert_eq!(img.width(), 100);
+        assert_eq!(img.height(), 50);
+    }
+
+    #[test]
+    fn rasterize_scales_down_when_wider_than_max() {
+        let bg = Rgb([255, 255, 255]);
+        let img = rasterize_svg_to_rgb(TINY_SVG, 50, bg).unwrap();
+        assert_eq!(img.width(), 50);
+        assert_eq!(img.height(), 25);
+    }
+
+    #[test]
+    fn rasterize_never_scales_up() {
+        let bg = Rgb([255, 255, 255]);
+        let img = rasterize_svg_to_rgb(TINY_SVG, 5000, bg).unwrap();
+        // SVG is 100 wide; max_width 5000 should NOT enlarge it.
+        assert_eq!(img.width(), 100);
+        assert_eq!(img.height(), 50);
+    }
+
+    #[test]
+    fn rasterize_invalid_svg_returns_err() {
+        let bg = Rgb([255, 255, 255]);
+        let result = rasterize_svg_to_rgb("not-an-svg", 800, bg);
+        assert!(result.is_err());
+    }
 }
