@@ -21,6 +21,7 @@ pub(crate) fn render_preview(
     fonts: &Fonts,
     theme: &Theme,
     layout: &LayoutParams,
+    mermaid_cache: &mut crate::mermaid::MermaidCache,
 ) -> RgbImage {
     let content_width = (width - PREVIEW_MARGIN * 2).min(layout.max_content_width);
     let margin_left = PREVIEW_MARGIN;
@@ -102,7 +103,22 @@ pub(crate) fn render_preview(
                 y = render_list(&mut img, items, fonts, theme, y, content_width, margin_left, layout);
                 y += layout.paragraph_gap;
             }
-            Block::Mermaid { .. } => {}
+            Block::Mermaid { source } => {
+                let indented_width = content_width - layout.block_indent;
+                let dark = crate::mermaid::is_dark_bg(theme.bg);
+                let diagram = mermaid_cache.get_or_render(
+                    source, indented_width, dark, fonts, theme,
+                );
+                let dw = diagram.width();
+                let dh = diagram.height();
+                if y.saturating_add(dh) >= max_height {
+                    break;
+                }
+                let x_off = indented_width.saturating_sub(dw) / 2;
+                let x = margin_left + layout.block_indent + x_off;
+                image::imageops::overlay(&mut img, &*diagram, x as i64, y as i64);
+                y += dh + layout.paragraph_gap;
+            }
         }
     }
 
@@ -117,11 +133,12 @@ pub(crate) fn render_markdown(
     fonts: &Fonts,
     theme: &Theme,
     layout: &LayoutParams,
+    mermaid_cache: &mut crate::mermaid::MermaidCache,
 ) -> (RgbImage, Vec<(usize, u32)>, u32) {
     let content_width = (width - layout.margin_left - layout.margin_right).min(layout.max_content_width);
     let margin_left = (width - content_width) / 2;
 
-    let total_height = compute_total_height(blocks, headings, fonts, theme, content_width, vp_height, layout);
+    let total_height = compute_total_height(blocks, headings, fonts, theme, content_width, vp_height, layout, mermaid_cache);
 
     let mut img = RgbImage::from_pixel(width, total_height.max(1), theme.bg);
     let mut y: u32 = layout.paragraph_gap;
@@ -217,7 +234,20 @@ pub(crate) fn render_markdown(
                 y = render_list(&mut img, items, fonts, theme, y, content_width, margin_left, layout);
                 y += layout.paragraph_gap;
             }
-            Block::Mermaid { .. } => {}
+            Block::Mermaid { source } => {
+                let indented_width = content_width - layout.block_indent;
+                let dark = crate::mermaid::is_dark_bg(theme.bg);
+                let diagram = mermaid_cache.get_or_render(
+                    source, indented_width, dark, fonts, theme,
+                );
+                let dw = diagram.width();
+                let dh = diagram.height();
+                // Center within the indented column.
+                let x_off = indented_width.saturating_sub(dw) / 2;
+                let x = margin_left + layout.block_indent + x_off;
+                image::imageops::overlay(&mut img, &*diagram, x as i64, y as i64);
+                y += dh + layout.paragraph_gap;
+            }
         }
     }
 
@@ -269,6 +299,7 @@ fn compute_total_height(
     content_width: u32,
     vp_height: u32,
     layout: &LayoutParams,
+    mermaid_cache: &mut crate::mermaid::MermaidCache,
 ) -> u32 {
     let mut h: u32 = layout.paragraph_gap;
     let mut heading_idx: usize = 0;
@@ -325,7 +356,14 @@ fn compute_total_height(
                 h += compute_list_height(items, fonts, theme, content_width, layout);
                 h += layout.paragraph_gap;
             }
-            Block::Mermaid { .. } => {}
+            Block::Mermaid { source } => {
+                let indented_width = content_width - layout.block_indent;
+                let dark = crate::mermaid::is_dark_bg(theme.bg);
+                let diagram = mermaid_cache.get_or_render(
+                    source, indented_width, dark, fonts, theme,
+                );
+                h += diagram.height() + layout.paragraph_gap;
+            }
         }
     }
 
@@ -678,6 +716,7 @@ fn render_list(
 mod tests {
     use super::*;
     use crate::headings::build_headings;
+    use crate::mermaid::MermaidCache;
     use crate::parsing::parse_markdown;
     use crate::test_helpers::{test_fonts, SAMPLE_MD};
     use crate::theme::default_theme;
@@ -689,7 +728,8 @@ mod tests {
         let layout = LayoutParams::default();
         let (blocks, _) = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
-        let (img, positions, margin_left) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout);
+        let mut mermaid_cache = MermaidCache::new();
+        let (img, positions, margin_left) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache);
 
         assert!(img.width() == 800);
         assert!(img.height() > 100, "image too short: {}", img.height());
@@ -704,7 +744,8 @@ mod tests {
         let layout = LayoutParams::default();
         let (blocks, _) = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
-        render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout);
+        let mut mermaid_cache = MermaidCache::new();
+        render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache);
 
         for i in 1..headings.len() {
             assert!(
@@ -726,11 +767,13 @@ mod tests {
         let (blocks, _) = parse_markdown(SAMPLE_MD);
 
         let mut headings_open = build_headings(&blocks);
-        let (img_open, _, _) = render_markdown(&blocks, &mut headings_open, 800, 600, &fonts, &theme, &layout);
+        let mut mermaid_cache = MermaidCache::new();
+        let (img_open, _, _) = render_markdown(&blocks, &mut headings_open, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache);
 
         let mut headings_folded = build_headings(&blocks);
         headings_folded[0].folded = true;
-        let (img_folded, _, _) = render_markdown(&blocks, &mut headings_folded, 800, 600, &fonts, &theme, &layout);
+        let mut mermaid_cache = MermaidCache::new();
+        let (img_folded, _, _) = render_markdown(&blocks, &mut headings_folded, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache);
 
         assert!(
             img_folded.height() < img_open.height(),
@@ -746,7 +789,8 @@ mod tests {
         let layout = LayoutParams::default();
         let (blocks, _) = parse_markdown(SAMPLE_MD);
         let headings = build_headings(&blocks);
-        let img = render_preview(&blocks, &headings, 800, 600, &fonts, &theme, &layout);
+        let mut mermaid_cache = MermaidCache::new();
+        let img = render_preview(&blocks, &headings, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache);
 
         assert_eq!(img.width(), 800);
         assert_eq!(img.height(), 600);
@@ -763,7 +807,8 @@ mod tests {
         let md = "- Item one\n- Item two\n\n1. First\n2. Second\n";
         let (blocks, _) = parse_markdown(md);
         let mut headings = build_headings(&blocks);
-        let (img, _, _) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout);
+        let mut mermaid_cache = MermaidCache::new();
+        let (img, _, _) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache);
         assert!(img.height() > 100);
     }
 
@@ -775,9 +820,56 @@ mod tests {
         for width in [400, 800, 1200, 1920] {
             let (blocks, _) = parse_markdown(SAMPLE_MD);
             let mut headings = build_headings(&blocks);
-            let (img, _, _) = render_markdown(&blocks, &mut headings, width, 600, &fonts, &theme, &layout);
+            let mut mermaid_cache = MermaidCache::new();
+            let (img, _, _) = render_markdown(&blocks, &mut headings, width, 600, &fonts, &theme, &layout, &mut mermaid_cache);
             assert_eq!(img.width(), width);
             assert!(img.height() > 0);
         }
+    }
+
+    #[test]
+    fn render_with_mermaid_block_increases_total_height() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
+
+        let without = "# Title\n\nSome text.\n";
+        let with = "# Title\n\nSome text.\n\n```mermaid\nflowchart LR\n    A --> B --> C\n```\n";
+
+        let (b1, _) = parse_markdown(without);
+        let mut h1 = build_headings(&b1);
+        let mut cache1 = MermaidCache::new();
+        let (img1, _, _) = render_markdown(&b1, &mut h1, 800, 600, &fonts, &theme, &layout, &mut cache1);
+
+        let (b2, _) = parse_markdown(with);
+        let mut h2 = build_headings(&b2);
+        let mut cache2 = MermaidCache::new();
+        let (img2, _, _) = render_markdown(&b2, &mut h2, 800, 600, &fonts, &theme, &layout, &mut cache2);
+
+        assert!(
+            img2.height() > img1.height(),
+            "doc with mermaid ({}) should be taller than without ({})",
+            img2.height(), img1.height(),
+        );
+    }
+
+    #[test]
+    fn render_mermaid_is_idempotent_second_call_uses_cache() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
+        let md = "# T\n\n```mermaid\nflowchart LR\n    A --> B\n```\n";
+        let (blocks, _) = parse_markdown(md);
+        let mut headings1 = build_headings(&blocks);
+        let mut headings2 = build_headings(&blocks);
+        let mut cache = MermaidCache::new();
+
+        let (img1, _, _) = render_markdown(&blocks, &mut headings1, 800, 600, &fonts, &theme, &layout, &mut cache);
+        let cache_size_after_first = cache.len();
+        let (img2, _, _) = render_markdown(&blocks, &mut headings2, 800, 600, &fonts, &theme, &layout, &mut cache);
+
+        assert_eq!(img1.height(), img2.height(), "heights must be equal across identical renders");
+        assert_eq!(cache.len(), cache_size_after_first, "second render must not add cache entries");
+        assert_eq!(cache.len(), 1);
     }
 }

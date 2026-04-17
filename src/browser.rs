@@ -243,7 +243,8 @@ fn show_preview(
                     let img = if is_markdown(name) {
                         let (blocks, _) = parse_markdown(&source);
                         let headings = build_headings(&blocks);
-                        render_preview(&blocks, &headings, preview_width, vp_height, fonts, theme, layout)
+                        let mut mermaid_cache = crate::mermaid::MermaidCache::new();
+                        render_preview(&blocks, &headings, preview_width, vp_height, fonts, theme, layout, &mut mermaid_cache)
                     } else {
                         let ext = file_extension(name);
                         render_source_preview(&source, &ext, preview_width, vp_height, fonts, theme, layout)

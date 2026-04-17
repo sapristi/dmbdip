@@ -5,6 +5,7 @@ use imageproc::drawing::text_size;
 use crate::constants::{LayoutParams, LIST_INDENT_PER_LEVEL};
 use crate::fonts::Fonts;
 use crate::headings::{build_headings, is_block_folded};
+use crate::mermaid::MermaidCache;
 use crate::parsing::parse_markdown;
 use crate::render::{heading_style, render_markdown, wrap_code_lines, wrap_heading_text};
 use crate::text::{spans_to_plain, wrap_spans};
@@ -30,6 +31,7 @@ pub(crate) struct AppState {
     pub(crate) search_matches: Vec<usize>,
     pub(crate) search_current: usize,
     pub(crate) search_highlights: Vec<(u32, u32, u32, u32, usize)>,
+    pub(crate) mermaid_cache: MermaidCache,
 }
 
 impl AppState {
@@ -64,6 +66,7 @@ impl AppState {
             search_matches: Vec::new(),
             search_current: 0,
             search_highlights: Vec::new(),
+            mermaid_cache: MermaidCache::new(),
         };
         state.rerender(fonts);
         state
@@ -78,6 +81,7 @@ impl AppState {
             fonts,
             &self.theme,
             &self.layout,
+            &mut self.mermaid_cache,
         );
         self.img = img;
         self.block_y_positions = positions;
