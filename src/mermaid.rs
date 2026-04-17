@@ -3,7 +3,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use ab_glyph::PxScale;
 use image::{Rgb, RgbImage};
+use imageproc::drawing::{draw_text_mut, text_size};
+
+use crate::fonts::Fonts;
+use crate::theme::Theme;
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
 pub(crate) struct MermaidCacheKey {
@@ -29,6 +34,34 @@ impl MermaidCache {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub(crate) fn get_or_render(
+        &mut self,
+        source: &str,
+        target_width: u32,
+        dark: bool,
+        fonts: &Fonts,
+        theme: &Theme,
+    ) -> Arc<RgbImage> {
+        let key = MermaidCacheKey {
+            source_hash: hash_source(source),
+            target_width,
+            dark,
+        };
+        if let Some(cached) = self.entries.get(&key) {
+            return Arc::clone(cached);
+        }
+        let image = match render_mermaid_svg(source, dark) {
+            Ok(svg) => match rasterize_svg_to_rgb(&svg, target_width, theme.bg) {
+                Ok(img) => img,
+                Err(msg) => render_error_image(&msg, target_width, fonts, theme),
+            },
+            Err(msg) => render_error_image(&msg, target_width, fonts, theme),
+        };
+        let arc = Arc::new(image);
+        self.entries.insert(key, Arc::clone(&arc));
+        arc
     }
 }
 
@@ -110,9 +143,41 @@ pub(crate) fn rasterize_svg_to_rgb(
     Ok(img)
 }
 
+pub(crate) fn render_error_image(
+    msg: &str,
+    max_width: u32,
+    fonts: &Fonts,
+    theme: &Theme,
+) -> RgbImage {
+    let scale = PxScale::from(theme.body_size);
+    let pad: u32 = 8;
+    let line_h = (theme.body_size * 1.4) as u32;
+    let full = format!("Mermaid error: {}", msg);
+
+    // Measure; clamp width to max_width - 2*pad.
+    let inner_max = max_width.saturating_sub(pad * 2).max(1);
+    let (text_w, _) = text_size(scale, &fonts.mono, &full);
+    let width = (text_w.min(inner_max) + pad * 2).min(max_width).max(1);
+    let height = line_h + pad * 2;
+
+    let mut img = RgbImage::from_pixel(width, height, theme.bg);
+    draw_text_mut(
+        &mut img,
+        theme.code_color,
+        pad as i32,
+        pad as i32,
+        scale,
+        &fonts.mono,
+        &full,
+    );
+    img
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::test_fonts;
+    use crate::theme::default_theme;
 
     #[test]
     fn cache_new_is_empty() {
@@ -193,5 +258,67 @@ mod tests {
         let bg = Rgb([255, 255, 255]);
         let result = rasterize_svg_to_rgb("not-an-svg", 800, bg);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn error_image_is_nonempty_and_respects_max_width() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let img = render_error_image("boom", 200, &fonts, &theme);
+        assert!(img.width() > 0);
+        assert!(img.height() > 0);
+        assert!(img.width() <= 200);
+    }
+
+    #[test]
+    fn cache_hit_returns_pointer_equal_arc() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let mut cache = MermaidCache::new();
+        let a = cache.get_or_render("flowchart LR\n    A --> B", 400, false, &fonts, &theme);
+        let b = cache.get_or_render("flowchart LR\n    A --> B", 400, false, &fonts, &theme);
+        assert!(Arc::ptr_eq(&a, &b), "second call must return cached Arc");
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn cache_key_distinguishes_width() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let mut cache = MermaidCache::new();
+        cache.get_or_render("flowchart LR\n    A --> B", 400, false, &fonts, &theme);
+        cache.get_or_render("flowchart LR\n    A --> B", 600, false, &fonts, &theme);
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn cache_key_distinguishes_dark_flag() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let mut cache = MermaidCache::new();
+        cache.get_or_render("flowchart LR\n    A --> B", 400, false, &fonts, &theme);
+        cache.get_or_render("flowchart LR\n    A --> B", 400, true, &fonts, &theme);
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn junk_source_returns_usable_image_without_panic() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let mut cache = MermaidCache::new();
+        let img = cache.get_or_render("@@@ bogus @@@", 400, false, &fonts, &theme);
+        assert!(img.width() > 0);
+        assert!(img.height() > 0);
+    }
+
+    #[test]
+    fn clear_empties_the_cache() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let mut cache = MermaidCache::new();
+        cache.get_or_render("flowchart LR\n    A --> B", 400, false, &fonts, &theme);
+        assert_eq!(cache.len(), 1);
+        cache.clear();
+        assert_eq!(cache.len(), 0);
     }
 }
