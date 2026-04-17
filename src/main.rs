@@ -5,6 +5,7 @@ mod file_watcher;
 mod fonts;
 mod headings;
 mod kitty;
+mod mermaid;
 mod overlay;
 mod parsing;
 mod render;
