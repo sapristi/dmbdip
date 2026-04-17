@@ -43,6 +43,31 @@ pub(crate) fn hash_source(source: &str) -> u64 {
     h.finish()
 }
 
+fn mermaid_theme_for(dark: bool) -> mermaid_rs_renderer::Theme {
+    let mut t = mermaid_rs_renderer::Theme::modern();
+    if dark {
+        t.background = "#1e1e1e".to_string();
+        t.primary_color = "#264f78".to_string();
+        t.primary_text_color = "#d4d4d4".to_string();
+        t.primary_border_color = "#569cd6".to_string();
+        t.secondary_color = "#3c3c3c".to_string();
+        t.tertiary_color = "#2d2d30".to_string();
+        t.line_color = "#7f7f7f".to_string();
+        t.text_color = "#d4d4d4".to_string();
+        t.edge_label_background = "#1e1e1e".to_string();
+        t.cluster_background = "#2d2d30".to_string();
+        t.cluster_border = "#569cd6".to_string();
+    }
+    t
+}
+
+pub(crate) fn render_mermaid_svg(source: &str, dark: bool) -> Result<String, String> {
+    let mut opts = mermaid_rs_renderer::RenderOptions::modern();
+    opts.theme = mermaid_theme_for(dark);
+    mermaid_rs_renderer::render_with_options(source, opts)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,4 +99,21 @@ mod tests {
         let b = hash_source("flowchart LR; A-->C");
         assert_ne!(a, b);
     }
+
+    #[test]
+    fn render_svg_valid_diagram_returns_svg_string() {
+        let result = render_mermaid_svg("flowchart LR\n    A --> B", false);
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let svg = result.unwrap();
+        assert!(svg.contains("<svg"), "output should contain <svg tag");
+    }
+
+    #[test]
+    fn render_svg_dark_palette_affects_output() {
+        let light = render_mermaid_svg("flowchart LR\n    A --> B", false).unwrap();
+        let dark = render_mermaid_svg("flowchart LR\n    A --> B", true).unwrap();
+        // Different theme palettes produce different SVG bytes.
+        assert_ne!(light, dark, "dark and light SVGs should differ");
+    }
+
 }
