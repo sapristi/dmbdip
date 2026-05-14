@@ -111,9 +111,6 @@ pub(crate) fn render_preview(
                 );
                 let dw = diagram.width();
                 let dh = diagram.height();
-                if y.saturating_add(dh) >= max_height {
-                    break;
-                }
                 let x_off = indented_width.saturating_sub(dw) / 2;
                 let x = margin_left + layout.block_indent + x_off;
                 image::imageops::overlay(&mut img, &*diagram, x as i64, y as i64);
