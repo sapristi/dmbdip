@@ -1,10 +1,18 @@
 use base64::Engine;
 use image::RgbImage;
 use std::io::{self, Read, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::constants::CURSOR_WIDTH;
+use crate::dlog;
 use crossterm::terminal;
+
+#[derive(Default, Clone, Copy)]
+pub(crate) struct SendTimings {
+    pub b64_us: u128,
+    pub write_us: u128,
+    pub bytes_b64: usize,
+}
 
 /// Query the terminal for Kitty graphics protocol support.
 /// Sends a 1x1 pixel query image and checks if the terminal responds with OK.
@@ -80,13 +88,16 @@ pub(crate) fn kitty_display_raw(
     height: u32,
     new_id: u32,
     old_id: u32,
-) -> io::Result<()> {
+) -> io::Result<SendTimings> {
+    let t_b64 = Instant::now();
     let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+    let b64_us = t_b64.elapsed().as_micros();
 
     let chunk_size = 4096;
     let bytes = b64.as_bytes();
     let total_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
 
+    let t_write = Instant::now();
     // Begin synchronized output to prevent flicker
     write!(w, "\x1b[?2026h")?;
     write!(w, "\x1b[H")?;
@@ -110,7 +121,9 @@ pub(crate) fn kitty_display_raw(
     // End synchronized output
     write!(w, "\x1b[?2026l")?;
 
-    w.flush()
+    w.flush()?;
+    let write_us = t_write.elapsed().as_micros();
+    Ok(SendTimings { b64_us, write_us, bytes_b64: bytes.len() })
 }
 
 pub(crate) fn paint_rect(
@@ -158,10 +171,12 @@ pub(crate) fn display_viewport(
     highlights: &[(u32, u32, u32, u32, usize)],
     current_match: usize,
 ) -> io::Result<()> {
+    let t_total = Instant::now();
     let src_w = vp_width.min(img.width());
     let src_h = vp_height.min(img.height().saturating_sub(scroll_y));
     let stride = src_w as usize * 3;
 
+    let t_copy = Instant::now();
     let raw = img.as_raw();
     let img_stride = img.width() as usize * 3;
     let row_start = scroll_y as usize * img_stride;
@@ -170,12 +185,16 @@ pub(crate) fn display_viewport(
         let offset = row_start + row * img_stride;
         viewport_data.extend_from_slice(&raw[offset..offset + src_w as usize * 3]);
     }
+    let copy_us = t_copy.elapsed().as_micros();
 
     // Draw search highlights
+    let t_hl = Instant::now();
+    let mut hl_painted: u32 = 0;
     for &(hx, hy, hw, hh, midx) in highlights {
         if hy + hh <= scroll_y || hy >= scroll_y + src_h {
             continue;
         }
+        hl_painted += 1;
         let is_current = midx == current_match;
         let (color, alpha) = if is_current {
             ([255, 180, 50], 0.35)
@@ -186,6 +205,7 @@ pub(crate) fn display_viewport(
             hw, (hy + hh).saturating_sub(scroll_y).min(src_h) - hy.saturating_sub(scroll_y),
             src_w, color, alpha);
     }
+    let hl_us = t_hl.elapsed().as_micros();
 
     // Draw cursor bar onto viewport data
     if let Some((cx, cy_img, ch, color)) = cursor_info {
@@ -216,10 +236,17 @@ pub(crate) fn display_viewport(
     let old_id = if new_id == 1 { 2 } else { 1 };
     *frame = old_id;
 
-    match col {
-        Some(c) => kitty_display_at(w, &viewport_data, src_w, src_h, c, new_id, old_id),
-        None => kitty_display_raw(w, &viewport_data, src_w, src_h, new_id, old_id),
-    }
+    let send = match col {
+        Some(c) => kitty_display_at(w, &viewport_data, src_w, src_h, c, new_id, old_id)?,
+        None => kitty_display_raw(w, &viewport_data, src_w, src_h, new_id, old_id)?,
+    };
+    let total_us = t_total.elapsed().as_micros();
+    dlog!(
+        "frame vp={}x{} doc_h={} copy={}us hl={}us(n={}) b64={}us write={}us total={}us bytes={}",
+        src_w, src_h, img.height(), copy_us, hl_us, hl_painted,
+        send.b64_us, send.write_us, total_us, send.bytes_b64
+    );
+    Ok(())
 }
 
 fn kitty_display_at(
@@ -230,12 +257,16 @@ fn kitty_display_at(
     col: u16,
     new_id: u32,
     old_id: u32,
-) -> io::Result<()> {
+) -> io::Result<SendTimings> {
+    let t_b64 = Instant::now();
     let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+    let b64_us = t_b64.elapsed().as_micros();
+
     let chunk_size = 4096;
     let bytes = b64.as_bytes();
     let total_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
 
+    let t_write = Instant::now();
     // Begin synchronized output to prevent flicker
     write!(w, "\x1b[?2026h")?;
     write!(w, "\x1b[1;{}H", col + 1)?;
@@ -258,7 +289,9 @@ fn kitty_display_at(
     write!(w, "\x1b_Ga=d,d=I,i={old_id},q=2\x1b\\")?;
     // End synchronized output
     write!(w, "\x1b[?2026l")?;
-    w.flush()
+    w.flush()?;
+    let write_us = t_write.elapsed().as_micros();
+    Ok(SendTimings { b64_us, write_us, bytes_b64: bytes.len() })
 }
 
 pub(crate) fn get_viewport_pixel_size() -> io::Result<(u32, u32)> {

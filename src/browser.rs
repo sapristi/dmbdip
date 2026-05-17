@@ -22,6 +22,7 @@ use crate::source_render::render_source_preview;
 use crate::source_state::SourceViewState;
 use crate::state::AppState;
 use crate::theme::Theme;
+use crate::dlog;
 
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(100);
 const FRAME_DURATION: Duration = Duration::from_millis(16);
@@ -399,6 +400,8 @@ pub(crate) fn run_browser(
 
     let mut open_in_editor = false;
     let mut last_reload = Instant::now();
+    let mut burst_events: u32 = 0;
+    let mut burst_started: Option<Instant> = None;
     loop {
         // --- Smooth scroll animation tick ---
         if smooth_scroll.active {
@@ -644,8 +647,20 @@ pub(crate) fn run_browser(
         // --- Event polling (non-blocking during animation) ---
         let poll_timeout = if smooth_scroll.active { FRAME_DURATION } else { Duration::from_millis(250) };
         if !event::poll(poll_timeout)? {
+            if burst_events > 0 {
+                let dur_ms = burst_started.map(|t| t.elapsed().as_millis()).unwrap_or(0);
+                dlog!("event-burst end: {} events over {}ms (active={})",
+                    burst_events, dur_ms, smooth_scroll.active);
+                burst_events = 0;
+                burst_started = None;
+            }
             continue;
         }
+
+        if burst_events == 0 {
+            burst_started = Some(Instant::now());
+        }
+        burst_events = burst_events.saturating_add(1);
 
         let event = event::read()?;
 

@@ -1,6 +1,7 @@
 mod browser;
 mod config;
 mod constants;
+mod debug;
 mod file_watcher;
 mod fonts;
 mod headings;
@@ -19,6 +20,9 @@ mod types;
 
 #[cfg(test)]
 mod test_helpers;
+
+#[cfg(test)]
+mod bench_scroll;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -92,6 +96,10 @@ fn main() -> io::Result<()> {
         let config = load_config();
         debug_config(&config);
         std::process::exit(0);
+    }
+
+    if let Some(path) = debug::init(args.debug) {
+        eprintln!("[debug] timing log: {}", path.display());
     }
 
     let start = Instant::now();
