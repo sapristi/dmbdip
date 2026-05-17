@@ -487,14 +487,47 @@ pub(crate) fn run_browser(
                     let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
                     if let Ok(content) = std::fs::read_to_string(path) {
                         if is_markdown(&file_name) {
-                            let new_ds = AppState::new(&content, fonts, cur_w, vp_height, *theme, *layout);
+                            let saved = match &state.doc_state {
+                                Some(DocContent::Markdown(ds)) => Some((
+                                    ds.scroll_y,
+                                    ds.current_heading,
+                                    ds.headings.iter().map(|h| h.folded).collect::<Vec<_>>(),
+                                    ds.frame,
+                                )),
+                                _ => None,
+                            };
+                            let mut new_ds = AppState::new(&content, fonts, cur_w, vp_height, *theme, *layout);
+                            if let Some((scroll, heading, folded, old_frame)) = saved {
+                                new_ds.frame = old_frame;
+                                new_ds.scroll_y = scroll.min(new_ds.max_scroll());
+                                new_ds.current_heading = heading;
+                                for (i, &f) in folded.iter().enumerate() {
+                                    if i < new_ds.headings.len() {
+                                        new_ds.headings[i].folded = f;
+                                    }
+                                }
+                                new_ds.rerender(fonts);
+                                new_ds.scroll_y = new_ds.scroll_y.min(new_ds.max_scroll());
+                            }
+                            smooth_scroll.jump_to(new_ds.scroll_y);
                             state.doc_state = Some(DocContent::Markdown(new_ds));
                         } else {
+                            let (saved_scroll, saved_frame) = match &state.doc_state {
+                                Some(DocContent::Source(ss)) => (Some(ss.scroll_y), Some(ss.frame)),
+                                _ => (None, None),
+                            };
                             let ext = file_extension(&file_name);
-                            let new_ss = SourceViewState::new(&content, &ext, fonts, cur_w, vp_height, *theme, *layout);
+                            let mut new_ss = SourceViewState::new(&content, &ext, fonts, cur_w, vp_height, *theme, *layout);
+                            if let Some(frame) = saved_frame {
+                                new_ss.frame = frame;
+                            }
+                            if let Some(scroll) = saved_scroll {
+                                new_ss.scroll_y = scroll.min(new_ss.max_scroll());
+                            }
+                            smooth_scroll.jump_to(new_ss.scroll_y);
                             state.doc_state = Some(DocContent::Source(new_ss));
                         }
-                        smooth_scroll.jump_to(0);
+                        last_reload = Instant::now();
                     }
                     let col = doc_col(state.file_list_visible);
                     let mut out = BufWriter::new(stdout.lock());
