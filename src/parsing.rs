@@ -51,6 +51,7 @@ pub(crate) fn parse_markdown(full_source: &str) -> (Vec<Block>, Vec<usize>) {
 
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
     let parser = Parser::new_ext(source, options).into_offset_iter();
     let mut blocks = Vec::new();
     let mut block_source_lines: Vec<usize> = Vec::new();
@@ -123,6 +124,10 @@ pub(crate) fn parse_markdown(full_source: &str) -> (Vec<Block>, Vec<usize>) {
             }
             MdEvent::Start(Tag::Emphasis) => style_stack.push(SpanStyle::Italic),
             MdEvent::End(TagEnd::Emphasis) => {
+                style_stack.pop();
+            }
+            MdEvent::Start(Tag::Strikethrough) => style_stack.push(SpanStyle::Strikethrough),
+            MdEvent::End(TagEnd::Strikethrough) => {
                 style_stack.pop();
             }
             MdEvent::Start(Tag::CodeBlock(kind)) => {
@@ -311,6 +316,22 @@ mod tests {
             assert!(styles.contains(&&SpanStyle::Bold));
             assert!(styles.contains(&&SpanStyle::Italic));
             assert!(styles.contains(&&SpanStyle::Code));
+        } else {
+            panic!("expected Paragraph");
+        }
+    }
+
+    #[test]
+    fn parse_strikethrough() {
+        let (blocks, _) = parse_markdown("hello ~~struck~~ world");
+        assert_eq!(blocks.len(), 1);
+        if let Block::Paragraph { spans } = &blocks[0] {
+            let struck: Vec<_> = spans
+                .iter()
+                .filter(|s| s.style == SpanStyle::Strikethrough)
+                .collect();
+            assert_eq!(struck.len(), 1);
+            assert_eq!(struck[0].text, "struck");
         } else {
             panic!("expected Paragraph");
         }

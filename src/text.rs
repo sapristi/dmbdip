@@ -147,7 +147,18 @@ pub(crate) fn draw_spans(
         }
 
         draw_text_mut(img, color, cx as i32, y as i32, scale, font, &span.text);
-        let w = text_size(scale, font, &span.text).0;
+        let (w, h) = text_size(scale, font, &span.text);
+
+        if span.style == SpanStyle::Strikethrough && w > 0 {
+            let line_y = y as i32 + (h as i32 * 5 / 9);
+            let thickness = ((scale.y / 14.0).round() as u32).max(1);
+            draw_filled_rect_mut(
+                img,
+                Rect::at(cx as i32, line_y).of_size(w, thickness),
+                color,
+            );
+        }
+
         cx += w;
     }
     cx

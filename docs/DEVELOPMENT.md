@@ -10,7 +10,7 @@
 ## Architecture
 
 - Parse markdown into `Vec<Block>` (Heading, Paragraph, CodeBlock, Table, Metadata, List, Mermaid)
-- Inline text uses `Vec<Span>` with styles: Normal, Bold, Italic, Code
+- Inline text uses `Vec<Span>` with styles: Normal, Bold, Italic, Code, Strikethrough
 - `HeadingInfo` tracks each heading's position, number, fold state
 - `AppState` manages blocks, headings, cursor, scroll, fold, search state
 - Two-pass rendering: compute height, then draw to RgbImage (re-renders on fold/nav changes)

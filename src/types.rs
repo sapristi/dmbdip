@@ -11,6 +11,7 @@ pub(crate) enum SpanStyle {
     Bold,
     Italic,
     Code,
+    Strikethrough,
 }
 
 #[derive(Clone, Debug)]
@@ -26,6 +27,7 @@ impl Span {
             SpanStyle::Bold => &fonts.bold,
             SpanStyle::Italic => &fonts.italic,
             SpanStyle::Code => &fonts.mono,
+            SpanStyle::Strikethrough => &fonts.regular,
         }
     }
 
