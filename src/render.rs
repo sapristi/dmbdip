@@ -216,10 +216,8 @@ pub(crate) fn layout_blocks(
             Block::Mermaid { source } => {
                 let indented_width = content_width - layout.block_indent;
                 let dark = crate::mermaid::is_dark_bg(theme.bg);
-                let diagram = mermaid_cache.get_or_render(
-                    source, indented_width, dark, fonts, theme,
-                );
-                diagram.height() + layout.paragraph_gap
+                let (_, height) = mermaid_cache.size(source, indented_width, dark, fonts, theme);
+                height + layout.paragraph_gap
             }
         };
         out.push(BlockLayout { block_index: bi, heading_index, y, height: advance });
@@ -1163,6 +1161,20 @@ mod tests {
             let (img, _, _) = render_markdown(&blocks, &mut headings, width, 600, &fonts, &theme, &layout, &mut cache, true);
             assert_eq!(img.height(), want, "width {width} fold {fold}");
         }
+    }
+
+    #[test]
+    fn layout_does_not_rasterize_mermaid() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
+        let md = "# T\n\n```mermaid\nflowchart LR\n    A --> B\n```\n\ntext\n\n```mermaid\nflowchart TD\n    X --> Y\n```\n";
+        let (blocks, _) = parse_markdown(md);
+        let headings = build_headings(&blocks);
+        let mut cache = MermaidCache::with_capacity(16);
+        layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache);
+        assert_eq!(cache.size_len(), 2);
+        assert_eq!(cache.len(), 0, "layout must not rasterize diagrams");
     }
 }
 

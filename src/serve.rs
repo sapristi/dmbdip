@@ -28,6 +28,8 @@ pub(crate) const MAX_STRIP_ROWS: u32 = 297;
 /// Upper bounds that keep a bad request from allocating absurd images.
 const MAX_WIDTH_PX: u32 = 20_000;
 const MAX_CELL_PX: u32 = 1_000;
+/// Rasterized mermaid diagrams kept between requests.
+const MERMAID_CACHE_IMAGES: usize = 16;
 
 #[derive(Deserialize)]
 struct RenderRequest {
@@ -247,7 +249,7 @@ pub(crate) fn run_serve(
         theme,
         layout,
         out_dir,
-        mermaid_cache: MermaidCache::new(),
+        mermaid_cache: MermaidCache::with_capacity(MERMAID_CACHE_IMAGES),
         last_geometry: None,
         last_strips: Vec::new(),
         file_counter: 0,

@@ -17,23 +17,94 @@ pub(crate) struct MermaidCacheKey {
     pub(crate) dark: bool,
 }
 
+/// Mermaid diagrams keyed by source, width and palette.
+///
+/// Two levels: `sizes` keeps each diagram's SVG and output size (cheap, never
+/// evicted) so layout needs no rasterizing; `entries` keeps rasterized
+/// images, optionally bounded (least recently used evicted first).
 pub(crate) struct MermaidCache {
-    entries: HashMap<MermaidCacheKey, Arc<RgbImage>>,
+    entries: HashMap<MermaidCacheKey, (Arc<RgbImage>, u64)>,
+    sizes: HashMap<MermaidCacheKey, SizedDiagram>,
+    capacity: Option<usize>,
+    tick: u64,
+}
+
+struct SizedDiagram {
+    /// `Ok(svg)`, or the error message to draw instead.
+    svg: Result<String, String>,
+    width: u32,
+    height: u32,
 }
 
 impl MermaidCache {
+    /// Unbounded pixel cache (TUI).
     pub(crate) fn new() -> Self {
-        Self { entries: HashMap::new() }
+        Self { entries: HashMap::new(), sizes: HashMap::new(), capacity: None, tick: 0 }
+    }
+
+    /// Pixel cache holding at most `capacity` images (serve mode).
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self { capacity: Some(capacity.max(1)), ..Self::new() }
     }
 
     #[allow(dead_code)]
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
+        self.sizes.clear();
     }
 
+    /// Number of rasterized images held.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Number of diagrams whose size is known.
+    #[cfg(test)]
+    pub(crate) fn size_len(&self) -> usize {
+        self.sizes.len()
+    }
+
+    fn key(source: &str, target_width: u32, dark: bool) -> MermaidCacheKey {
+        MermaidCacheKey { source_hash: hash_source(source), target_width, dark }
+    }
+
+    fn sized(
+        &mut self,
+        key: MermaidCacheKey,
+        source: &str,
+        fonts: &Fonts,
+        theme: &Theme,
+    ) -> &SizedDiagram {
+        self.sizes.entry(key).or_insert_with(|| {
+            let svg = render_mermaid_svg(source, key.dark)
+                .and_then(|svg| svg_output_size(&svg, key.target_width).map(|size| (svg, size)));
+            match svg {
+                Ok((svg, (width, height))) => SizedDiagram { svg: Ok(svg), width, height },
+                Err(msg) => {
+                    let img = render_error_image(&msg, key.target_width, fonts, theme);
+                    SizedDiagram { svg: Err(msg), width: img.width(), height: img.height() }
+                }
+            }
+        })
+    }
+
+    /// Output size of the diagram as `get_or_render` would draw it, without
+    /// rasterizing.
+    pub(crate) fn size(
+        &mut self,
+        source: &str,
+        target_width: u32,
+        dark: bool,
+        fonts: &Fonts,
+        theme: &Theme,
+    ) -> (u32, u32) {
+        let key = Self::key(source, target_width, dark);
+        if let Some((img, _)) = self.entries.get(&key) {
+            return img.dimensions();
+        }
+        let d = self.sized(key, source, fonts, theme);
+        (d.width, d.height)
     }
 
     pub(crate) fn get_or_render(
@@ -44,23 +115,33 @@ impl MermaidCache {
         fonts: &Fonts,
         theme: &Theme,
     ) -> Arc<RgbImage> {
-        let key = MermaidCacheKey {
-            source_hash: hash_source(source),
-            target_width,
-            dark,
-        };
-        if let Some(cached) = self.entries.get(&key) {
+        let key = Self::key(source, target_width, dark);
+        self.tick += 1;
+        let tick = self.tick;
+        if let Some((cached, used)) = self.entries.get_mut(&key) {
+            *used = tick;
             return Arc::clone(cached);
         }
-        let image = match render_mermaid_svg(source, dark) {
-            Ok(svg) => match rasterize_svg_to_rgb(&svg, target_width, theme.bg) {
+        let image = match &self.sized(key, source, fonts, theme).svg {
+            Ok(svg) => match rasterize_svg_to_rgb(svg, target_width, theme.bg) {
                 Ok(img) => img,
                 Err(msg) => render_error_image(&msg, target_width, fonts, theme),
             },
-            Err(msg) => render_error_image(&msg, target_width, fonts, theme),
+            Err(msg) => render_error_image(msg, target_width, fonts, theme),
         };
+        if let Some(cap) = self.capacity {
+            while self.entries.len() >= cap {
+                let oldest = self
+                    .entries
+                    .iter()
+                    .min_by_key(|(_, (_, used))| *used)
+                    .map(|(k, _)| *k)
+                    .expect("cache is not empty");
+                self.entries.remove(&oldest);
+            }
+        }
         let arc = Arc::new(image);
-        self.entries.insert(key, Arc::clone(&arc));
+        self.entries.insert(key, (Arc::clone(&arc), tick));
         arc
     }
 }
@@ -101,16 +182,8 @@ pub(crate) fn render_mermaid_svg(source: &str, dark: bool) -> Result<String, Str
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn rasterize_svg_to_rgb(
-    svg: &str,
-    max_width: u32,
-    bg: Rgb<u8>,
-) -> Result<RgbImage, String> {
-    let mut opt = usvg::Options::default();
-    opt.fontdb_mut().load_system_fonts();
-
-    let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| e.to_string())?;
-
+/// Scale (never up) and output size of an SVG drawn at most `max_width` wide.
+fn output_scale(tree: &usvg::Tree, max_width: u32) -> Result<(f32, u32, u32), String> {
     let size = tree.size();
     let intrinsic_w = size.width();
     let intrinsic_h = size.height();
@@ -125,6 +198,26 @@ pub(crate) fn rasterize_svg_to_rgb(
     };
     let out_w = (intrinsic_w * scale).round().max(1.0) as u32;
     let out_h = (intrinsic_h * scale).round().max(1.0) as u32;
+    Ok((scale, out_w, out_h))
+}
+
+/// Output size `rasterize_svg_to_rgb` would produce, without rasterizing.
+/// The SVG's size does not depend on fonts, so none are loaded.
+pub(crate) fn svg_output_size(svg: &str, max_width: u32) -> Result<(u32, u32), String> {
+    let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).map_err(|e| e.to_string())?;
+    output_scale(&tree, max_width).map(|(_, w, h)| (w, h))
+}
+
+pub(crate) fn rasterize_svg_to_rgb(
+    svg: &str,
+    max_width: u32,
+    bg: Rgb<u8>,
+) -> Result<RgbImage, String> {
+    let mut opt = usvg::Options::default();
+    opt.fontdb_mut().load_system_fonts();
+
+    let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| e.to_string())?;
+    let (scale, out_w, out_h) = output_scale(&tree, max_width)?;
 
     let mut pixmap = resvg::tiny_skia::Pixmap::new(out_w, out_h)
         .ok_or_else(|| "failed to allocate pixmap".to_string())?;
@@ -320,5 +413,37 @@ mod tests {
         assert_eq!(cache.len(), 1);
         cache.clear();
         assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn size_matches_rendered_image_and_does_not_rasterize() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let mut cache = MermaidCache::new();
+        let size = cache.size("flowchart LR\n    A --> B --> C", 300, true, &fonts, &theme);
+        assert_eq!(cache.len(), 0, "size must not rasterize");
+        assert_eq!(cache.size_len(), 1);
+        let img = cache.get_or_render("flowchart LR\n    A --> B --> C", 300, true, &fonts, &theme);
+        assert_eq!(img.dimensions(), size);
+        let err = cache.size("@@@ bogus @@@", 300, false, &fonts, &theme);
+        let err_img = cache.get_or_render("@@@ bogus @@@", 300, false, &fonts, &theme);
+        assert_eq!(err_img.dimensions(), err);
+    }
+
+    #[test]
+    fn bounded_cache_evicts_least_recently_used() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let mut cache = MermaidCache::with_capacity(2);
+        let a = "flowchart LR\n    A --> B";
+        let b = "flowchart LR\n    B --> C";
+        let c = "flowchart LR\n    C --> D";
+        let first = cache.get_or_render(a, 400, false, &fonts, &theme);
+        cache.get_or_render(b, 400, false, &fonts, &theme);
+        cache.get_or_render(a, 400, false, &fonts, &theme); // a is now the most recent
+        cache.get_or_render(c, 400, false, &fonts, &theme); // evicts b
+        assert_eq!(cache.len(), 2);
+        assert!(Arc::ptr_eq(&first, &cache.get_or_render(a, 400, false, &fonts, &theme)), "a kept");
+        assert_eq!(cache.size_len(), 3, "sizes are never evicted");
     }
 }
