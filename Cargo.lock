@@ -428,6 +428,7 @@ dependencies = [
  "pulldown-cmark",
  "resvg",
  "serde",
+ "serde_json",
  "syntect",
  "toml",
  "usvg",

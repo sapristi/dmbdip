@@ -10,6 +10,7 @@ mod mermaid;
 mod overlay;
 mod parsing;
 mod render;
+mod serve;
 mod source_render;
 mod smooth_scroll;
 mod source_state;
@@ -36,6 +37,7 @@ use kitty::{detect_graphics_support, get_viewport_pixel_size};
 struct Args {
     debug: bool,
     debug_config: bool,
+    serve: bool,
     path: PathBuf,
 }
 
@@ -47,6 +49,8 @@ fn print_help() {
     eprintln!("Options:");
     eprintln!("  --debug              Enable debug output");
     eprintln!("  --debug-config       Print resolved configuration and exit");
+    eprintln!("  --serve              Headless render server for editor previews");
+    eprintln!("                       (line-delimited JSON on stdin/stdout)");
     eprintln!("  -v, --version        Show version");
     eprintln!("  -h, --help           Show this help message");
     eprintln!();
@@ -63,6 +67,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
 
     let mut debug = false;
     let mut debug_config = false;
+    let mut serve = false;
     let mut path = PathBuf::from(".");
     let mut parser = lexopt::Parser::from_env();
 
@@ -78,12 +83,13 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             }
             Long("debug") => debug = true,
             Long("debug-config") => debug_config = true,
+            Long("serve") => serve = true,
             Value(val) => path = PathBuf::from(val),
             _ => return Err(arg.unexpected()),
         }
     }
 
-    Ok(Args { debug, debug_config, path })
+    Ok(Args { debug, debug_config, serve, path })
 }
 
 fn main() -> io::Result<()> {
@@ -100,6 +106,16 @@ fn main() -> io::Result<()> {
 
     if let Some(path) = debug::init(args.debug) {
         eprintln!("[debug] timing log: {}", path.display());
+    }
+
+    if args.serve {
+        let config = load_config();
+        let theme = build_theme(&config.theme);
+        let layout = LayoutParams::from_config(&config.layout);
+        let fonts = load_fonts(Some(&config.fonts));
+        let stdin = io::stdin();
+        let stdout = io::stdout();
+        return serve::run_serve(stdin.lock(), stdout.lock(), &fonts, &theme, &layout, &serve::strip_dir());
     }
 
     let start = Instant::now();
