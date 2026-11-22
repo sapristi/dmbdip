@@ -477,7 +477,12 @@ end
 
 local function apply_strips(P, resp)
   local L = P.layout
-  if not L or resp.doc ~= L.doc then
+  if not L or resp.doc ~= L.doc or #vim.fn.win_findbuf(P.buf) == 0 then
+    -- Not for the current layout, or the preview was hidden meanwhile (its
+    -- images were all deleted): drop it, and the files kitty won't read.
+    for _, strip in ipairs(resp.strips or {}) do
+      os.remove(strip.path)
+    end
     return
   end
   for _, strip in ipairs(resp.strips) do
@@ -581,7 +586,11 @@ end
 local function on_show(P, win)
   P.win = win
   apply_window_options(P, win)
-  pump(P)
+  -- When toggling in, the caller positions the view first, then pumps, so
+  -- the first strips requested are the ones around the mapped position.
+  if not P.toggling then
+    pump(P)
+  end
 end
 
 --- Drop images once the preview buffer is shown in no window.
@@ -851,14 +860,16 @@ local function toggle_in(src, win)
   }
   P.win = win
   save_window_options(P, win)
+  P.toggling = true
   local ok, err = pcall(vim.api.nvim_win_set_buf, win, P.buf)
+  P.toggling = false
   if not ok then
     P.snapshot = nil
     P.saved_wo[win] = nil
     notify(tostring(err), vim.log.levels.WARN)
     return
   end
-  -- BufWinEnter has applied the window options and sent a layout if needed.
+  -- BufWinEnter has applied the window options; position, then request.
   P.entered = { view = src_view }
   local current = P.layout
     and not needs_layout(P, geometry(P, win))
@@ -866,11 +877,11 @@ local function toggle_in(src, win)
   if current then
     position_preview(P, win, src_view.topline)
     P.entered_top = vim.fn.getwininfo(win)[1].topline
-    pump(P)
   else
     P.position_on_layout = src_view.topline
     P.entered_top = nil
   end
+  pump(P)
 end
 
 local function toggle_out(P, win)

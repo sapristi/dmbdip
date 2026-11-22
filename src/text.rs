@@ -126,7 +126,7 @@ pub(crate) fn draw_spans(
     img: &mut RgbImage,
     spans: &[Span],
     x: u32,
-    y: u32,
+    y: i32,
     scale: PxScale,
     fonts: &Fonts,
     theme: &Theme,
@@ -141,16 +141,16 @@ pub(crate) fn draw_spans(
             let pad = 2;
             draw_filled_rect_mut(
                 img,
-                Rect::at(cx as i32 - pad as i32, y as i32).of_size(tw + pad * 2, th + pad),
+                Rect::at(cx as i32 - pad as i32, y).of_size(tw + pad * 2, th + pad),
                 theme.code_bg,
             );
         }
 
-        draw_text_mut(img, color, cx as i32, y as i32, scale, font, &span.text);
+        draw_text_mut(img, color, cx as i32, y, scale, font, &span.text);
         let (w, h) = text_size(scale, font, &span.text);
 
         if span.style == SpanStyle::Strikethrough && w > 0 {
-            let line_y = y as i32 + (h as i32 * 5 / 9);
+            let line_y = y + (h as i32 * 5 / 9);
             let thickness = ((scale.y / 14.0).round() as u32).max(1);
             draw_filled_rect_mut(
                 img,

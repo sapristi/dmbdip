@@ -16,9 +16,12 @@
 - Rendering (`src/render.rs`): `layout_blocks` computes each unfolded block's slot (`y`, height
   including its trailing gap; an H1's extra margin is in its own slot) and the content height
   without drawing (mermaid diagrams are only sized: `MermaidCache::size`). `draw_block` draws one
-  block; `render_markdown` (TUI) draws every slot onto one page image; `render_region` draws only
-  the blocks overlapping a row range, each into a scratch image of its slot, and is
-  pixel-identical to the same rows of `render_markdown` (tested). `MermaidCache` keeps SVGs and
+  block at a page y onto an image whose row 0 is a given page row (clipped). Code blocks, lists
+  and tables also get `parts` from the layout (y of each source line, item or row), so drawing
+  skips the parts outside the image without measuring them. `render_markdown` (TUI) draws every
+  slot onto one page image; `render_region` draws only the blocks overlapping a row range
+  straight into a strip-sized image, so a strip's cost follows its height, not the blocks'
+  (tested), and is pixel-identical to the same rows of `render_markdown` (tested). `MermaidCache` keeps SVGs and
   sizes (unbounded) apart from rasterized images (unbounded in the TUI, 16 LRU in serve mode).
 - Kitty display: double-buffered with alternating image IDs, raw RGB, BufWriter
 - Alternate screen mode for proper key passthrough

@@ -217,6 +217,10 @@ vim.cmd("DmbdipToggle")
 wait_idle(P, "toggle in again")
 check(P.layout.doc == doc_before, "unchanged source: no new layout")
 check(#by("t") > 0, "strips re-sent after hiding")
+local first_loaded = math.huge
+for index in pairs(P.images) do
+  first_loaded = math.min(first_loaded, index)
+end
 vim.cmd("normal! G")
 dmbdip._pump(src)
 wait_idle(P, "scroll to end")
@@ -224,11 +228,11 @@ local last = P.layout.nstrips - 1
 check(P.loaded[last], "last strip loaded after scrolling to the end")
 local first_deleted = false
 for _, r in ipairs(by("d")) do
-  if r.i == P.base_id then
+  if r.i == P.base_id + first_loaded then
     first_deleted = true
   end
 end
-check(first_deleted, "first strip deleted after scrolling to the end")
+check(first_deleted, "first loaded strip deleted after scrolling to the end")
 check_bounded(P, win)
 
 -- Back to the middle by rows, then toggle out: source follows the preview.
@@ -254,6 +258,48 @@ vim.cmd("silent write")
 vim.cmd("DmbdipToggle")
 wait_idle(P, "layout after edit")
 check(P.layout.doc > doc_before, "edit while hidden re-lays out on show")
+vim.cmd("DmbdipToggle")
+
+-- Strips arriving after the preview was hidden are dropped, not transmitted.
+vim.cmd("DmbdipToggle")
+wait_idle(P, "toggle in before hiding")
+vim.cmd("normal! G")
+dmbdip._pump(src)
+check(P.in_flight and P.in_flight.type == "strips", "strips request in flight before hiding")
+vim.cmd("DmbdipToggle")
+requests = {}
+check(vim.wait(30000, function()
+  return not P.in_flight
+end, 10), "strips response after hiding")
+vim.wait(50)
+check(#by("t") == 0, "no transmit after the preview was hidden")
+check(count(P.images) == 0, "no images kept after the preview was hidden")
+
+-- Toggle in at a new position: the first strips requested are the ones
+-- around the mapped position, not around the preview's previous view.
+vim.fn.winrestview({ topline = 1300, lnum = 1300 })
+local sent_reqs = {}
+local orig_chansend = vim.fn.chansend
+vim.fn.chansend = function(job, data)
+  sent_reqs[#sent_reqs + 1] = vim.json.decode(data)
+  return orig_chansend(job, data)
+end
+vim.cmd("DmbdipToggle")
+wait_idle(P, "toggle in at line 1300")
+vim.fn.chansend = orig_chansend
+local first_strips
+for _, r in ipairs(sent_reqs) do
+  if r.type == "strips" then
+    first_strips = r
+    break
+  end
+end
+check(first_strips ~= nil, "strips requested after toggling in")
+local top_index = math.floor((topline(win) - 1) / P.layout.strip_rows)
+check(
+  vim.tbl_contains(first_strips.indices, top_index),
+  ("first strips request %s lacks the strip at the view (%d)"):format(vim.inspect(first_strips.indices), top_index)
+)
 vim.cmd("DmbdipToggle")
 
 ---------------------------------------------------------------------------

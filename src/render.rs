@@ -37,7 +37,7 @@ pub(crate) fn render_preview(
 
         match block {
             Block::Metadata { entries } => {
-                y = render_metadata(&mut img, entries, fonts, theme, y, margin_left + layout.block_indent, content_width - layout.block_indent);
+                y = render_metadata(&mut img, entries, fonts, theme, y, margin_left + layout.block_indent, content_width - layout.block_indent, 0);
                 y += layout.paragraph_gap * 2;
             }
             Block::Heading { level, spans } => {
@@ -86,21 +86,21 @@ pub(crate) fn render_preview(
                     if y >= max_height {
                         break;
                     }
-                    draw_spans(&mut img, line, margin_left + layout.block_indent, y, scale, fonts, theme);
+                    draw_spans(&mut img, line, margin_left + layout.block_indent, y as i32, scale, fonts, theme);
                     y += line_height;
                 }
                 y += layout.paragraph_gap;
             }
             Block::CodeBlock { text } => {
-                y = render_code_block(&mut img, text, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
+                y = render_code_block(&mut img, text, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent, 0, None);
                 y += layout.paragraph_gap;
             }
             Block::Table { headers, rows } => {
-                y = render_table(&mut img, headers, rows, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
+                y = render_table(&mut img, headers, rows, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent, 0, None);
                 y += layout.paragraph_gap * 2;
             }
             Block::List { items } => {
-                y = render_list(&mut img, items, fonts, theme, y, content_width, margin_left, layout);
+                y = render_list(&mut img, items, fonts, theme, y, content_width, margin_left, layout, 0, None);
                 y += layout.paragraph_gap;
             }
             Block::Mermaid { source } => {
@@ -126,13 +126,31 @@ pub(crate) fn render_preview(
 /// the next block's `y`, so it includes the block's trailing gap; an H1's
 /// extra top margin belongs to its own slot. The last slot runs to the end of
 /// the content height.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BlockLayout {
     pub(crate) block_index: usize,
     /// Index into `headings` when the block is a heading.
     pub(crate) heading_index: Option<usize>,
     pub(crate) y: u32,
     pub(crate) height: u32,
+    /// For blocks that can be tall (code block, list, table): the y offset
+    /// from the block's top of each part (source line, item, body row), then
+    /// the block height. Lets drawing skip the parts outside a region without
+    /// measuring them.
+    pub(crate) parts: Vec<u32>,
+}
+
+/// Whether part `[top, bottom)` (image rows) lies entirely above (`Less`) or
+/// below (`Greater`) anything a line of height `h` could draw into `img`.
+fn part_position(img: &RgbImage, top: i32, bottom: i32, h: u32) -> std::cmp::Ordering {
+    let h = h as i32;
+    if bottom + h < 0 {
+        std::cmp::Ordering::Less
+    } else if top - h > img.height() as i32 {
+        std::cmp::Ordering::Greater
+    } else {
+        std::cmp::Ordering::Equal
+    }
 }
 
 /// Column geometry for a render width: `(content_width, margin_left)`.
@@ -154,7 +172,7 @@ pub(crate) fn layout_blocks(
 ) -> (Vec<BlockLayout>, u32) {
     let (content_width, _) = content_geometry(width, layout);
     let mut y: u32 = layout.paragraph_gap;
-    // `compute_table_height` measures 2 px more than `render_table` advances;
+    // Tables used to be measured 2 px taller than `render_table` advances;
     // the page height keeps those pixels (at the end) so TUI heights stay as
     // they always were.
     let mut slack: u32 = 0;
@@ -172,6 +190,7 @@ pub(crate) fn layout_blocks(
             continue;
         }
 
+        let mut parts = Vec::new();
         let advance = match block {
             Block::Metadata { entries } => {
                 let scale = PxScale::from(theme.body_size);
@@ -198,20 +217,17 @@ pub(crate) fn layout_blocks(
                 lines.len() as u32 * line_height + layout.paragraph_gap
             }
             Block::CodeBlock { text } => {
-                let scale = PxScale::from(theme.body_size);
-                let line_height = (theme.body_size * 1.4) as u32;
-                let indented_width = content_width - layout.block_indent;
-                let wrapped = wrap_code_lines(text, fonts, scale, indented_width - 20);
-                let total_lines = wrapped.iter().map(|w| w.len() as u32).sum::<u32>().max(1);
-                total_lines * line_height + 20 + layout.paragraph_gap
+                parts = code_block_parts(text, fonts, theme, content_width - layout.block_indent);
+                parts[parts.len() - 1] + layout.paragraph_gap
             }
             Block::Table { headers, rows } => {
                 slack += 2;
-                compute_table_height(headers, rows, fonts, theme, content_width - layout.block_indent) - 2
-                    + layout.paragraph_gap * 2
+                parts = table_parts(headers, rows, fonts, theme, content_width - layout.block_indent);
+                parts[parts.len() - 1] + layout.paragraph_gap * 2
             }
             Block::List { items } => {
-                compute_list_height(items, fonts, theme, content_width, layout) + layout.paragraph_gap
+                parts = list_parts(items, fonts, theme, content_width, layout);
+                parts[parts.len() - 1] + layout.paragraph_gap
             }
             Block::Mermaid { source } => {
                 let indented_width = content_width - layout.block_indent;
@@ -220,7 +236,7 @@ pub(crate) fn layout_blocks(
                 height + layout.paragraph_gap
             }
         };
-        out.push(BlockLayout { block_index: bi, heading_index, y, height: advance });
+        out.push(BlockLayout { block_index: bi, heading_index, y, height: advance, parts });
         y += advance;
     }
 
@@ -231,15 +247,25 @@ pub(crate) fn layout_blocks(
     (out, content_height)
 }
 
-/// Draw one block at `y` (the top of its slot) onto `img`; returns the y
-/// where the next block starts. For a heading, records its position in
-/// `heading` as `y_base + ` its y in `img`.
+/// Whether a text line whose top is at image row `top` (line height `h`) may
+/// put pixels into `img`. Generous: glyphs may stick out of their line box.
+fn line_visible(img: &RgbImage, top: i32, h: u32) -> bool {
+    let h = h as i32;
+    top + 2 * h >= 0 && top - h <= img.height() as i32
+}
+
+/// Draw one block whose slot starts at page row `y` onto `img`, whose row 0
+/// is page row `off` (0 for a full page; drawing is clipped to the image and
+/// lines outside it are skipped, so the cost follows the image height, not
+/// the block's). Returns the page y where the next block starts. For a
+/// heading, records its page position in `heading`.
 fn draw_block(
     img: &mut RgbImage,
     block: &Block,
     heading: Option<&mut HeadingInfo>,
     y: u32,
-    y_base: u32,
+    off: i32,
+    parts: Option<&[u32]>,
     width: u32,
     fonts: &Fonts,
     theme: &Theme,
@@ -251,7 +277,7 @@ fn draw_block(
     let mut y = y;
     match block {
         Block::Metadata { entries } => {
-            y = render_metadata(img, entries, fonts, theme, y, margin_left + layout.block_indent, content_width - layout.block_indent);
+            y = render_metadata(img, entries, fonts, theme, y, margin_left + layout.block_indent, content_width - layout.block_indent, off);
             y += layout.paragraph_gap * 2;
         }
         Block::Heading { level, spans } => {
@@ -267,7 +293,7 @@ fn draw_block(
             let scale = PxScale::from(size);
             let heading_total_h = lines.len() as u32 * line_height;
 
-            heading.y_pos = y_base + y;
+            heading.y_pos = y;
             heading.heading_height = heading_total_h;
 
             if fold_arrows {
@@ -281,7 +307,7 @@ fn draw_block(
                     img,
                     color,
                     arrow_x,
-                    y as i32 + arrow_y_offset,
+                    y as i32 - off + arrow_y_offset,
                     arrow_scale,
                     &fonts.bold,
                     fold_char,
@@ -289,16 +315,19 @@ fn draw_block(
             }
 
             for line in &lines {
-                for span in line {
-                    draw_text_mut(
-                        img,
-                        color,
-                        margin_left as i32,
-                        y as i32,
-                        scale,
-                        &fonts.bold,
-                        &span.text,
-                    );
+                let top = y as i32 - off;
+                if line_visible(img, top, line_height) {
+                    for span in line {
+                        draw_text_mut(
+                            img,
+                            color,
+                            margin_left as i32,
+                            top,
+                            scale,
+                            &fonts.bold,
+                            &span.text,
+                        );
+                    }
                 }
                 y += line_height;
             }
@@ -311,21 +340,24 @@ fn draw_block(
             let line_height = (theme.body_size * 1.4) as u32;
 
             for line in &lines {
-                draw_spans(img, line, margin_left + layout.block_indent, y, scale, fonts, theme);
+                let top = y as i32 - off;
+                if line_visible(img, top, line_height) {
+                    draw_spans(img, line, margin_left + layout.block_indent, top, scale, fonts, theme);
+                }
                 y += line_height;
             }
             y += layout.paragraph_gap;
         }
         Block::CodeBlock { text } => {
-            y = render_code_block(img, text, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
+            y = render_code_block(img, text, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent, off, parts);
             y += layout.paragraph_gap;
         }
         Block::Table { headers, rows } => {
-            y = render_table(img, headers, rows, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
+            y = render_table(img, headers, rows, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent, off, parts);
             y += layout.paragraph_gap * 2;
         }
         Block::List { items } => {
-            y = render_list(img, items, fonts, theme, y, content_width, margin_left, layout);
+            y = render_list(img, items, fonts, theme, y, content_width, margin_left, layout, off, parts);
             y += layout.paragraph_gap;
         }
         Block::Mermaid { source } => {
@@ -339,7 +371,9 @@ fn draw_block(
             // Center within the indented column.
             let x_off = indented_width.saturating_sub(dw) / 2;
             let x = margin_left + layout.block_indent + x_off;
-            image::imageops::overlay(img, &*diagram, x as i64, y as i64);
+            // A diagram is drawn whole (clipped): its size is bounded by the
+            // column width and its own aspect ratio, not by the document.
+            image::imageops::overlay(img, &*diagram, x as i64, y as i64 - off as i64);
             y += dh + layout.paragraph_gap;
         }
     }
@@ -365,7 +399,7 @@ pub(crate) fn render_markdown(
     for l in &layouts {
         let heading = l.heading_index.map(|hi| &mut headings[hi]);
         let end = draw_block(
-            &mut img, &blocks[l.block_index], heading, l.y, 0, width, fonts, theme, layout,
+            &mut img, &blocks[l.block_index], heading, l.y, 0, Some(&l.parts), width, fonts, theme, layout,
             mermaid_cache, fold_arrows,
         );
         debug_assert!(end <= l.y + l.height, "block {} drew past its slot", l.block_index);
@@ -376,7 +410,8 @@ pub(crate) fn render_markdown(
 }
 
 /// Render the page rows `[y0, y0 + height)` (full render width), drawing only
-/// the blocks whose slot overlaps them. Pixel-identical to the same rows of
+/// the blocks whose slot overlaps them, and within tall blocks only the lines
+/// near the region: the cost follows `height`, not the blocks' heights. Pixel-identical to the same rows of
 /// `render_markdown` with `vp_height = 0`; rows past the content are `bg`.
 pub(crate) fn render_region(
     blocks: &[Block],
@@ -393,28 +428,19 @@ pub(crate) fn render_region(
 ) -> RgbImage {
     let mut img = RgbImage::from_pixel(width, height, theme.bg);
     let y1 = y0 + height;
-    let row_bytes = width as usize * 3;
     // Slots are sorted by y: skip to the first one that ends after y0.
     let first = layouts.partition_point(|l| l.y + l.height <= y0);
     for l in &layouts[first..] {
         if l.y >= y1 {
             break;
         }
-        if l.height == 0 {
-            continue;
-        }
-        let mut scratch = RgbImage::from_pixel(width, l.height, theme.bg);
+        // Drawn in page order straight into the region, as the full render
+        // does, offset so that page row y0 is image row 0.
         let heading = l.heading_index.map(|hi| &mut headings[hi]);
         draw_block(
-            &mut scratch, &blocks[l.block_index], heading, 0, l.y, width, fonts, theme, layout,
+            &mut img, &blocks[l.block_index], heading, l.y, y0 as i32, Some(&l.parts), width, fonts, theme, layout,
             mermaid_cache, fold_arrows,
         );
-        let from = l.y.max(y0);
-        let to = (l.y + l.height).min(y1);
-        let src = &scratch.as_raw()[(from - l.y) as usize * row_bytes..(to - l.y) as usize * row_bytes];
-        let dst_start = (from - y0) as usize * row_bytes;
-        let dst: &mut [u8] = &mut img;
-        dst[dst_start..dst_start + src.len()].copy_from_slice(src);
     }
     img
 }
@@ -532,6 +558,7 @@ fn render_metadata(
     start_y: u32,
     margin_left: u32,
     content_width: u32,
+    off: i32,
 ) -> u32 {
     let scale = PxScale::from(theme.body_size);
     let line_height = (theme.body_size * 1.5) as u32;
@@ -546,7 +573,7 @@ fn render_metadata(
             img,
             theme.meta_key_color,
             margin_left as i32,
-            y as i32,
+            y as i32 - off,
             scale,
             &fonts.bold,
             &key_text,
@@ -557,7 +584,7 @@ fn render_metadata(
                 img,
                 theme.meta_val_color,
                 (margin_left + key_w) as i32,
-                y as i32,
+                y as i32 - off,
                 scale,
                 &fonts.regular,
                 line,
@@ -569,6 +596,24 @@ fn render_metadata(
     y
 }
 
+const CODE_PAD: u32 = 10;
+
+/// Parts of a code block: the y offset of each source line from the block's
+/// top, then the block height.
+fn code_block_parts(text: &str, fonts: &Fonts, theme: &Theme, content_width: u32) -> Vec<u32> {
+    let scale = PxScale::from(theme.body_size);
+    let line_height = (theme.body_size * 1.4) as u32;
+    let inner_width = content_width - CODE_PAD * 2;
+    let mut parts = Vec::new();
+    let mut total_lines = 0u32;
+    for line in text.lines() {
+        parts.push(CODE_PAD + total_lines * line_height);
+        total_lines += wrap_code_line(line, fonts, scale, inner_width).len() as u32;
+    }
+    parts.push(total_lines.max(1) * line_height + CODE_PAD * 2);
+    parts
+}
+
 fn render_code_block(
     img: &mut RgbImage,
     text: &str,
@@ -577,29 +622,49 @@ fn render_code_block(
     start_y: u32,
     content_width: u32,
     margin_left: u32,
+    off: i32,
+    parts: Option<&[u32]>,
 ) -> u32 {
     let scale = PxScale::from(theme.body_size);
     let line_height = (theme.body_size * 1.4) as u32;
-    let pad = 10u32;
+    let pad = CODE_PAD;
     let inner_width = content_width - pad * 2;
 
-    let wrapped_lines = wrap_code_lines(text, fonts, scale, inner_width);
-    let total_lines = wrapped_lines.iter().map(|w| w.len() as u32).sum::<u32>().max(1);
-    let block_height = total_lines * line_height + pad * 2;
+    let owned;
+    let parts = match parts {
+        Some(p) => p,
+        None => {
+            owned = code_block_parts(text, fonts, theme, content_width);
+            &owned[..]
+        }
+    };
+    let nlines = parts.len() - 1;
+    let block_height = parts[nlines];
 
     draw_filled_rect_mut(
         img,
-        Rect::at(margin_left as i32, start_y as i32).of_size(
+        Rect::at(margin_left as i32, start_y as i32 - off).of_size(
             content_width,
             block_height,
         ),
         theme.code_bg,
     );
 
-    let mut y = start_y + pad;
-    for lines in &wrapped_lines {
-        for line in lines {
-            draw_spans(img, line, margin_left + pad, y, scale, fonts, theme);
+    for (i, source_line) in text.lines().enumerate().take(nlines) {
+        let top = start_y + parts[i];
+        let bottom = if i + 1 < nlines { start_y + parts[i + 1] } else { start_y + block_height - pad };
+        // Lines far from the image are neither measured nor drawn.
+        match part_position(img, top as i32 - off, bottom as i32 - off, line_height) {
+            std::cmp::Ordering::Less => continue,
+            std::cmp::Ordering::Greater => break,
+            std::cmp::Ordering::Equal => {}
+        }
+        let mut y = top;
+        for line in wrap_code_line(source_line, fonts, scale, inner_width) {
+            let ty = y as i32 - off;
+            if line_visible(img, ty, line_height) {
+                draw_spans(img, &line, margin_left + pad, ty, scale, fonts, theme);
+            }
             y += line_height;
         }
     }
@@ -607,39 +672,40 @@ fn render_code_block(
     start_y + block_height
 }
 
-fn compute_table_height(
+/// Height of a table row (or the header) with its cells wrapped.
+fn table_row_height(cells: &[Vec<Span>], fonts: &Fonts, scale: PxScale, cell_text_width: u32, line_height: u32) -> u32 {
+    let cell_pad_y: u32 = 4;
+    let mut row_h = line_height + cell_pad_y * 2;
+    for cell in cells {
+        let wrapped = wrap_spans(cell, fonts, scale, cell_text_width);
+        row_h = row_h.max(wrapped.len() as u32 * line_height + cell_pad_y * 2);
+    }
+    row_h
+}
+
+/// Parts of a table: the y offset of each body row from the table's top
+/// (the first one is the header height), then the table height.
+fn table_parts(
     headers: &[Vec<Span>],
     rows: &[Vec<Vec<Span>>],
     fonts: &Fonts,
     theme: &Theme,
     content_width: u32,
-) -> u32 {
+) -> Vec<u32> {
     let ncols = headers.len().max(1);
     let col_width = content_width / ncols as u32;
     let scale = PxScale::from(theme.body_size);
     let line_height = (theme.body_size * 1.4) as u32;
-    let cell_pad_y: u32 = 4;
     let cell_text_width = col_width.saturating_sub(12);
 
-    let mut header_h = line_height + cell_pad_y * 2;
-    for cell in headers {
-        let wrapped = wrap_spans(cell, fonts, scale, cell_text_width);
-        let h = wrapped.len() as u32 * line_height + cell_pad_y * 2;
-        header_h = header_h.max(h);
-    }
-
-    let mut total = header_h;
+    let mut y = table_row_height(headers, fonts, scale, cell_text_width, line_height);
+    let mut parts = Vec::with_capacity(rows.len() + 1);
     for row in rows {
-        let mut row_h = line_height + cell_pad_y * 2;
-        for cell in row {
-            let wrapped = wrap_spans(cell, fonts, scale, cell_text_width);
-            let h = wrapped.len() as u32 * line_height + cell_pad_y * 2;
-            row_h = row_h.max(h);
-        }
-        total += row_h;
+        parts.push(y);
+        y += table_row_height(row, fonts, scale, cell_text_width, line_height);
     }
-
-    total + 2
+    parts.push(y);
+    parts
 }
 
 fn render_table(
@@ -651,7 +717,17 @@ fn render_table(
     start_y: u32,
     content_width: u32,
     margin_left: u32,
+    off: i32,
+    parts: Option<&[u32]>,
 ) -> u32 {
+    let owned;
+    let parts = match parts {
+        Some(p) => p,
+        None => {
+            owned = table_parts(headers, rows, fonts, theme, content_width);
+            &owned[..]
+        }
+    };
     let ncols = headers.len().max(1);
     let col_width = content_width / ncols as u32;
     let scale = PxScale::from(theme.body_size);
@@ -661,7 +737,7 @@ fn render_table(
     let table_width = col_width * ncols as u32;
     let cell_text_width = col_width.saturating_sub(cell_padding * 2);
 
-    let mut y = start_y;
+    let y = start_y;
 
     let mut header_h = line_height + cell_pad_y * 2;
     let mut header_wrapped: Vec<Vec<Vec<Span>>> = Vec::new();
@@ -674,7 +750,7 @@ fn render_table(
 
     draw_filled_rect_mut(
         img,
-        Rect::at(margin_left as i32, y as i32).of_size(table_width, header_h),
+        Rect::at(margin_left as i32, y as i32 - off).of_size(table_width, header_h),
         theme.table_header_bg,
     );
 
@@ -687,7 +763,7 @@ fn render_table(
                     img,
                     theme.h2_color,
                     x as i32,
-                    ty as i32,
+                    ty as i32 - off,
                     scale,
                     &fonts.bold,
                     &span.text,
@@ -697,7 +773,7 @@ fn render_table(
         }
     }
 
-    let line_y = (y + header_h) as f32;
+    let line_y = (y + header_h) as f32 - off as f32;
     draw_line_segment_mut(
         img,
         (margin_left as f32, line_y),
@@ -705,45 +781,47 @@ fn render_table(
         theme.table_border,
     );
 
-    y += header_h;
-
-    for row in rows {
-        let mut row_h = line_height + cell_pad_y * 2;
-        let mut row_wrapped: Vec<Vec<Vec<Span>>> = Vec::new();
-        for cell in row {
-            let wrapped = wrap_spans(cell, fonts, scale, cell_text_width);
-            let h = wrapped.len() as u32 * line_height + cell_pad_y * 2;
-            row_h = row_h.max(h);
-            row_wrapped.push(wrapped);
+    for (ri, row) in rows.iter().enumerate() {
+        let top = start_y + parts[ri];
+        let bottom = start_y + parts[ri + 1];
+        // Rows far from the image are neither measured nor drawn.
+        match part_position(img, top as i32 - off, bottom as i32 - off, line_height) {
+            std::cmp::Ordering::Less => continue,
+            std::cmp::Ordering::Greater => break,
+            std::cmp::Ordering::Equal => {}
         }
-
-        for (ci, wrapped) in row_wrapped.iter().enumerate() {
+        for (ci, cell) in row.iter().enumerate() {
+            let wrapped = wrap_spans(cell, fonts, scale, cell_text_width);
             let x = margin_left + ci as u32 * col_width + cell_padding;
-            let mut ty = y + cell_pad_y;
-            for line in wrapped {
-                draw_spans(img, line, x, ty, scale, fonts, theme);
+            let mut ty = top + cell_pad_y;
+            for line in &wrapped {
+                draw_spans(img, line, x, ty as i32 - off, scale, fonts, theme);
                 ty += line_height;
             }
         }
-
-        y += row_h;
-
+        let ly = bottom as f32 - off as f32;
         draw_line_segment_mut(
             img,
-            (margin_left as f32, y as f32),
-            ((margin_left + table_width) as f32, y as f32),
+            (margin_left as f32, ly),
+            ((margin_left + table_width) as f32, ly),
             theme.table_border,
         );
     }
+    let y = start_y + parts[parts.len() - 1];
 
-    for ci in 0..=ncols {
-        let x = (margin_left + ci as u32 * col_width) as f32;
-        draw_line_segment_mut(
-            img,
-            (x, start_y as f32),
-            (x, y as f32),
-            theme.table_border,
-        );
+    // Vertical borders, clipped to the image rows they cross.
+    let top = (start_y as i64 - off as i64).max(-1);
+    let bottom = (y as i64 - off as i64).min(img.height() as i64);
+    if top <= bottom {
+        for ci in 0..=ncols {
+            let x = (margin_left + ci as u32 * col_width) as f32;
+            draw_line_segment_mut(
+                img,
+                (x, top as f32),
+                (x, bottom as f32),
+                theme.table_border,
+            );
+        }
     }
 
     y
@@ -756,18 +834,22 @@ fn marker_text(marker: &ListMarker) -> String {
     }
 }
 
-fn compute_list_height(
+/// Parts of a list: the y offset of each item from the list's top, then the
+/// list height.
+fn list_parts(
     items: &[ListItem],
     fonts: &Fonts,
     theme: &Theme,
     content_width: u32,
     layout: &LayoutParams,
-) -> u32 {
+) -> Vec<u32> {
     let scale = PxScale::from(theme.body_size);
     let line_height = (theme.body_size * 1.4) as u32;
     let mut h: u32 = 0;
+    let mut parts = Vec::with_capacity(items.len() + 1);
 
     for item in items {
+        parts.push(h);
         let indent = layout.block_indent + item.depth * LIST_INDENT_PER_LEVEL;
         let mt = marker_text(&item.marker);
         let marker_w = text_size(scale, &fonts.regular, &mt).0;
@@ -775,8 +857,8 @@ fn compute_list_height(
         let lines = wrap_spans(&item.spans, fonts, scale, text_width);
         h += lines.len().max(1) as u32 * line_height;
     }
-
-    h
+    parts.push(h);
+    parts
 }
 
 fn render_list(
@@ -788,40 +870,57 @@ fn render_list(
     content_width: u32,
     margin_left: u32,
     layout: &LayoutParams,
+    off: i32,
+    parts: Option<&[u32]>,
 ) -> u32 {
     let scale = PxScale::from(theme.body_size);
     let line_height = (theme.body_size * 1.4) as u32;
-    let mut y = start_y;
+    let owned;
+    let parts = match parts {
+        Some(p) => p,
+        None => {
+            owned = list_parts(items, fonts, theme, content_width, layout);
+            &owned[..]
+        }
+    };
 
-    for item in items {
+    for (ii, item) in items.iter().enumerate() {
+        let mut y = start_y + parts[ii];
+        // Items far from the image are neither measured nor drawn.
+        match part_position(img, y as i32 - off, (start_y + parts[ii + 1]) as i32 - off, line_height) {
+            std::cmp::Ordering::Less => continue,
+            std::cmp::Ordering::Greater => break,
+            std::cmp::Ordering::Equal => {}
+        }
         let indent = layout.block_indent + item.depth * LIST_INDENT_PER_LEVEL;
         let x = margin_left + indent;
         let mt = marker_text(&item.marker);
         let marker_w = text_size(scale, &fonts.regular, &mt).0;
 
-        draw_text_mut(
-            img,
-            theme.body_color,
-            x as i32,
-            y as i32,
-            scale,
-            &fonts.regular,
-            &mt,
-        );
+        if line_visible(img, y as i32 - off, line_height) {
+            draw_text_mut(
+                img,
+                theme.body_color,
+                x as i32,
+                y as i32 - off,
+                scale,
+                &fonts.regular,
+                &mt,
+            );
+        }
 
         let text_width = content_width.saturating_sub(indent + marker_w);
         let lines = wrap_spans(&item.spans, fonts, scale, text_width);
-        for (li, line) in lines.iter().enumerate() {
-            let lx = if li == 0 { x + marker_w } else { x + marker_w };
-            draw_spans(img, line, lx, y, scale, fonts, theme);
-            y += line_height;
-        }
-        if lines.is_empty() {
+        for line in &lines {
+            let top = y as i32 - off;
+            if line_visible(img, top, line_height) {
+                draw_spans(img, line, x + marker_w, top, scale, fonts, theme);
+            }
             y += line_height;
         }
     }
 
-    y
+    start_y + parts[parts.len() - 1]
 }
 
 #[cfg(test)]
@@ -1109,10 +1208,23 @@ mod tests {
     #[test]
     fn region_strips_match_full_render() {
         let long = long_test_doc();
-        let docs: [(&str, &str); 3] = [
+        let mut tall = String::from("Intro.\n\n```\n");
+        for i in 0..400 {
+            tall.push_str(&format!("code line {i} gjpqy\n"));
+        }
+        tall.push_str("```\n\n");
+        for i in 0..300 {
+            tall.push_str(&format!("- item {i} gjpqy\n"));
+        }
+        tall.push_str("\n| a | b |\n|---|---|\n");
+        for i in 0..300 {
+            tall.push_str(&format!("| row {i} | gjpqy |\n"));
+        }
+        let docs: [(&str, &str); 4] = [
             ("SAMPLE_MD", SAMPLE_MD),
             ("docs/sample.md", include_str!("../docs/sample.md")),
             ("long", &long),
+            ("tall blocks", &tall),
         ];
         for (name, md) in docs {
             for strip_h in [21 * 48, 21 * 297, 1000] {
@@ -1174,6 +1286,76 @@ mod tests {
         layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache);
         assert_eq!(cache.size_len(), 2);
         assert_eq!(cache.len(), 0, "layout must not rasterize diagrams");
+    }
+
+    /// Time to render a 50-row strip (42 px cells) starting at the middle
+    /// (rounded down to whole strips, at least the second strip) of `md`.
+    fn middle_strip_time(md: &str) -> std::time::Duration {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
+        let (blocks, _) = parse_markdown(md);
+        let mut headings = build_headings(&blocks);
+        let mut cache = MermaidCache::new();
+        let (layouts, total) = layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache);
+        let strip_h = 42 * 50;
+        let y0 = (total / 2 / strip_h).max(1) * strip_h;
+        assert!(y0 + strip_h <= total, "document shorter than two strips");
+        let t = std::time::Instant::now();
+        let strip = render_region(&blocks, &mut headings, 970, &fonts, &theme, &layout, &mut cache, false, &layouts, y0, strip_h);
+        let elapsed = t.elapsed();
+        assert!(strip.pixels().any(|p| *p != theme.bg), "strip has content");
+        elapsed
+    }
+
+    /// A strip in the middle of a tall block costs about as much as a strip
+    /// of a short block of the same content: only the parts (lines, items,
+    /// rows) near the strip are measured and drawn, straight into the strip.
+    /// Times are compared rather than bounded so the test holds in debug
+    /// builds; before parts were skipped the tall case was 10x+ slower.
+    fn assert_strip_cost_independent_of_block_height(doc: impl Fn(usize) -> String, tall: usize) {
+        let short_time = middle_strip_time(&doc(250));
+        let tall_time = middle_strip_time(&doc(tall));
+        assert!(
+            tall_time < short_time * 3 + std::time::Duration::from_millis(50),
+            "strip of a {tall}-part block took {tall_time:?}, of a 250-part block {short_time:?}",
+        );
+    }
+
+    #[test]
+    fn strip_of_tall_code_block_is_cheap() {
+        assert_strip_cost_independent_of_block_height(
+            |n| {
+                let mut md = String::from("```\n");
+                for i in 0..n {
+                    md.push_str(&format!("let value_{i} = compute(arg_{i}, other_{i}); // line {i}\n"));
+                }
+                md + "```\n"
+            },
+            5000,
+        );
+    }
+
+    #[test]
+    fn strip_of_long_list_is_cheap() {
+        assert_strip_cost_independent_of_block_height(
+            |n| (0..n).map(|i| format!("- list item number {i} with a few words\n")).collect(),
+            3000,
+        );
+    }
+
+    #[test]
+    fn strip_of_long_table_is_cheap() {
+        assert_strip_cost_independent_of_block_height(
+            |n| {
+                let mut md = String::from("| a | b |\n|---|---|\n");
+                for i in 0..n {
+                    md.push_str(&format!("| row {i} | value {i} |\n"));
+                }
+                md
+            },
+            3000,
+        );
     }
 }
 
