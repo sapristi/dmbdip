@@ -47,6 +47,9 @@ end
 
 vim.o.columns = 200
 vim.o.lines = 50
+-- Redraw once at the new size: a first headless redraw much later (screen
+-- checks below) crashes nvim 0.12 in msg_grid_validate.
+vim.cmd("redraw")
 vim.o.termguicolors = true
 vim.o.hidden = false -- toggling in unloads the source: it must come back
 vim.cmd("filetype on")
@@ -453,15 +456,17 @@ check(fc(A2.row) == -1, "A2 not folded")
 check(cursor_row() == A1.row, "cursor on A1's row")
 
 -- Decorations: arrow on each heading's text row, bar on the current one.
-local marks_ns = vim.api.nvim_get_namespaces()["dmbdip_marks"]
-local function chunks_at(row)
-  local m = vim.api.nvim_buf_get_extmarks(P.buf, marks_ns, { row, 0 }, { row, -1 }, { details = true })
-  check(#m <= 1, "at most one decoration per row")
-  if m[1] then
-    check(m[1][3] == P.layout.offset_cols, "decoration in the reserved columns")
-    check(m[1][4].virt_text_pos == "overlay", "overlay decoration")
-    return m[1][4].virt_text
-  end
+local function chunks_at(row, w)
+  return dmbdip._decorations(w or win)[row]
+end
+--- Text drawn on screen in the 2 reserved columns of buffer row `row`.
+local function screen_cols(row, w)
+  w = w or win
+  vim.cmd("redraw!")
+  local pos = vim.fn.screenpos(w, row + 1, 1)
+  check(pos.row > 0, "row " .. row .. " on screen")
+  local col = pos.col + P.layout.offset_cols
+  return vim.fn.screenstring(pos.row, col) .. vim.fn.screenstring(pos.row, col + 1)
 end
 local c = chunks_at(A1.text_row)
 check(c and c[1][1] == "▎" and c[1][2] == "DmbdipCursor", "bar on the current heading: " .. vim.inspect(c))
@@ -479,6 +484,43 @@ check(vim.api.nvim_get_hl(0, { name = "DmbdipHeading1" }).fg == tonumber(A.color
 check(vim.wo[win].foldtext == "" and vim.wo[win].foldmethod == "manual", "fold window options")
 check(vim.wo[win].fillchars:find("fold: ", 1, true), "fold filler is a space")
 check(vim.wo[win].winhighlight:find("Folded:DmbdipFolded", 1, true), "Folded cleared")
+
+-- Decorations are drawn on screen, and per window: a second window on the
+-- preview has its own (unfolded) folds.
+vim.fn.winrestview({ topline = A.row + 1 })
+vim.api.nvim_win_set_cursor(win, { A1.row + 1, 0 })
+check(screen_cols(A1.text_row) == "▎▶", "drawn: bar and closed arrow, got " .. screen_cols(A1.text_row))
+check(screen_cols(A.text_row) == " ▼", "drawn: open arrow")
+vim.cmd("split")
+local win2 = vim.api.nvim_get_current_win()
+check(vim.api.nvim_win_get_buf(win2) == P.buf, "second window on the preview")
+check(closed(A1), "a split copies the window's folds (neovim)")
+vim.cmd("normal! zR")
+check(not closed(A1), "folds opened in the second window only")
+check(chunks_at(A1.text_row, win2)[2][1] == "▼" and chunks_at(A1.text_row, win)[2][1] == "▶", "arrows per window")
+check(screen_cols(A1.text_row, win2):sub(-3) == "▼" and screen_cols(A1.text_row, win):sub(-3) == "▶", "drawn per window")
+vim.cmd("close")
+check(vim.api.nvim_get_current_win() == win, "back in the first window")
+-- The window's height changed twice: let its re-layout land now (a closed
+-- fold inside a closed one would not survive it, see the known limit).
+wait_idle(P, "layout after closing the second window")
+
+-- Cursor line left inside a closed fold (zc twice from deep in A1a): A1 is
+-- the current heading, toggle_fold opens it, not A.
+goto_row(A1.row)
+dmbdip.toggle_fold()
+check(not closed(A1) and not closed(A), "A1 reopened")
+goto_row(A1a.end_row + 2)
+vim.cmd("normal! zc")
+vim.cmd("normal! zc")
+check(closed(A1) and fc(A1a.end_row + 2) == A1.end_row + 1, "A1 closed around A1a")
+check(chunks_at(A1.text_row)[1][1] == "▎", "bar on A1 while the cursor line is hidden")
+check(chunks_at(A1a.text_row)[1][1] == " ", "no bar on hidden A1a")
+dmbdip.toggle_fold()
+check(fc(A1.end_row) == -1 and not closed(A), "toggle_fold opened A1, A stays open")
+check(cursor_row() == A1.row, "cursor on A1")
+dmbdip.toggle_fold()
+check(closed(A1) and not closed(A), "A1 closed again")
 
 -- Nested: close A too; A1 and A2 hidden, B visible.
 goto_row(A.row)
@@ -522,8 +564,6 @@ check(not closed(A) and closed(A1), "A open, A1 still closed")
 goto_row(A2.end_row + 1)
 vim.cmd("normal! zc")
 check(closed(A2), "A2 closed with zc")
--- (a real zc moves the cursor to the fold's first line: CursorMoved)
-vim.api.nvim_exec_autocmds("CursorMoved", { buffer = P.buf })
 check(chunks_at(A2.text_row)[2][1] == "▶", "arrow follows a zc fold")
 
 -- Toggle out and back in keeps the closed folds.
@@ -546,6 +586,14 @@ hd = heads()
 check(hd.A2.row > A2.row, "A2 moved down")
 A, A1, A1a, A2, B = hd.A, hd.A1, hd.A1a, hd.A2, hd.B
 check(closed(A1) and closed(A2) and not closed(A) and not closed(B), "folds kept after an edit while hidden")
+-- zM / zR with no cursor move: what the next redraw draws follows them.
+-- (Checked through _decorations, which the redraw uses: a screen check this
+-- late crashes headless nvim 0.12 on grid assertions, provider or not.)
+vim.api.nvim_win_set_cursor(win, { A.row + 1, 0 })
+vim.cmd("normal! zM")
+check(chunks_at(A.text_row)[2][1] == "▶" and chunks_at(B.text_row)[2][1] == "▶", "closed arrows after zM")
+vim.cmd("normal! zR")
+check(chunks_at(A.text_row)[2][1] == "▼" and chunks_at(A1.text_row)[2][1] == "▼", "open arrows after zR")
 vim.cmd("DmbdipToggle")
 
 -- Split: a new window starts with all folds open; a zc fold survives a live

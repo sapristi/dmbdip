@@ -12,7 +12,8 @@
 -- aligns headings to cell rows). Neovim owns the fold state: the plugin only
 -- reads it back (`foldclosed()`) when it has to rebuild the folds, after a
 -- re-layout or when the preview is shown again. Fold arrows and the
--- current-heading bar are overlay extmarks in 2 columns reserved left of the
+-- current-heading bar are drawn per window at redraw time (decoration
+-- provider, ephemeral overlay extmarks) in 2 columns reserved left of the
 -- image.
 
 local diacritics = require("dmbdip.diacritics")
@@ -75,6 +76,7 @@ M._previews = previews -- exposed for tests
 
 local ns = vim.api.nvim_create_namespace("dmbdip")
 local marks_ns = vim.api.nvim_create_namespace("dmbdip_marks")
+local drawn = {} -- window -> { col = byte column, [row] = chunks } for its current redraw
 local seeded = false
 
 function M.setup(opts)
@@ -431,48 +433,47 @@ local function read_closed(L, win)
   return closed
 end
 
---- Rows `[a, b]` (0-based) around the window's view, for decorations: the
---- visible rows and a window height on each side. Call in the window.
-local function decoration_range()
-  local h = vim.api.nvim_win_get_height(0)
-  return { vim.fn.line("w0") - 1 - h, vim.fn.line("w$") - 1 + h }
+--- Index of the current heading in the current window: the last heading at
+--- or above the cursor as shown. Inside a closed fold neovim keeps the
+--- cursor's line where it was, so the fold's first line (the last row of its
+--- heading) is used instead.
+local function current_heading(L)
+  local lnum = vim.fn.line(".")
+  local fc = vim.fn.foldclosed(lnum)
+  return heading_at(L, (fc ~= -1 and fc or lnum) - 1)
 end
 
---- Draw the fold arrows (heading colour, ▶ closed / ▼ open) and the bar
---- beside the current heading's rows, as seen in the preview window.
-local function decorate(P)
-  if not vim.api.nvim_buf_is_valid(P.buf) then
-    return
-  end
-  vim.api.nvim_buf_clear_namespace(P.buf, marks_ns, 0, -1)
+--- What `win` shows of preview `P` in the reserved columns for rows
+--- `[a, b]` (0-based): row -> virt_text chunks. Fold arrows (▶ closed / ▼
+--- open, heading colour) on each heading's text row, the bar beside the
+--- current heading's rows; fold state and cursor are `win`'s own.
+local function decorations(P, win, a, b)
+  local out = {}
   local L = P.layout
-  local win = preview_win(P)
-  if not L or not win or vim.api.nvim_buf_line_count(P.buf) ~= L.total_rows then
-    return
-  end
-  local a, b = unpack(vim.api.nvim_win_call(win, decoration_range))
-  local cur = heading_at(L, vim.api.nvim_win_get_cursor(win)[1] - 1)
-  local function mark(row, chunks)
-    vim.api.nvim_buf_set_extmark(P.buf, marks_ns, row, L.offset_cols, {
-      virt_text = chunks,
-      virt_text_pos = "overlay",
-      hl_mode = "combine",
-    })
+  if not L or vim.api.nvim_buf_line_count(P.buf) ~= L.total_rows then
+    return out
   end
   vim.api.nvim_win_call(win, function()
-    for i, h in ipairs(L.headings) do
+    local hs = L.headings
+    local cur = current_heading(L)
+    for i = heading_at(L, a) or 1, #hs do
+      local h = hs[i]
+      if h.row > b then
+        break
+      end
       if h.text_row >= a and h.text_row <= b then
         local arrow = fold_closed(h) and CLOSED or OPEN
-        mark(h.text_row, { { i == cur and BAR or " ", "DmbdipCursor" }, { arrow, "DmbdipHeading" .. h.level } })
+        out[h.text_row] = { { i == cur and BAR or " ", "DmbdipCursor" }, { arrow, "DmbdipHeading" .. h.level } }
+      end
+    end
+    local h = cur and hs[cur]
+    if h then
+      for row = math.max(h.text_row + 1, a), math.min(h.end_row, b) do
+        out[row] = { { BAR, "DmbdipCursor" } }
       end
     end
   end)
-  local h = cur and L.headings[cur]
-  if h then
-    for row = math.max(h.text_row + 1, a), math.min(h.end_row, b) do
-      mark(row, { { BAR, "DmbdipCursor" } })
-    end
-  end
+  return out
 end
 
 --- Recreate the folds of the current layout in `win`, closing those of the
@@ -689,7 +690,6 @@ local function apply_layout(P, resp, meta)
   elseif win and meta.keep_line then
     position_preview(P, win, meta.keep_line)
   end
-  decorate(P)
 end
 
 local function apply_strips(P, resp)
@@ -809,7 +809,6 @@ local function on_show(P, win)
   -- Folds as they were when this window toggled out (none for a new window).
   if P.layout then
     build_folds(P, win, P.toggle_closed[win] or {})
-    decorate(P)
   end
   P.toggle_closed[win] = nil
   -- When toggling in, the caller positions the view first, then pumps, so
@@ -1013,15 +1012,7 @@ local function create(src)
       local pw = preview_win(P)
       if pw and (ev[tostring(pw)] or (sw and ev[tostring(sw)])) then
         pump(P)
-        decorate(P)
       end
-    end,
-  })
-  au("CursorMoved", {
-    buffer = buf,
-    callback = function()
-      P.win = vim.api.nvim_get_current_win()
-      decorate(P)
     end,
   })
   au("WinResized", {
@@ -1042,6 +1033,7 @@ local function create(src)
       local win = tonumber(ev.match)
       P.saved_wo[win] = nil
       P.toggle_closed[win] = nil
+      drawn[win] = nil
       if win == P.split_win then
         P.split_win = nil
       end
@@ -1219,7 +1211,7 @@ local function goto_heading(step)
     return
   end
   local L = P.layout
-  local cur = heading_at(L, vim.api.nvim_win_get_cursor(win)[1] - 1) or 0
+  local cur = current_heading(L) or 0
   local i = cur + step
   while L.headings[i] and not heading_visible(L.headings[i]) do
     i = i + step
@@ -1238,7 +1230,6 @@ local function goto_heading(step)
     vim.cmd("normal! " .. n .. vim.keycode("<C-y>"))
   end
   vim.api.nvim_win_set_cursor(win, { h.row + 1, 0 })
-  decorate(P)
 end
 
 --- Move to the next visible heading of the preview in the current window.
@@ -1259,14 +1250,13 @@ function M.toggle_fold()
     return
   end
   local L = P.layout
-  local h = L.headings[heading_at(L, vim.api.nvim_win_get_cursor(win)[1] - 1) or 0]
+  local h = L.headings[current_heading(L) or 0]
   if not h or not h.foldable then
     return
   end
   local a = h.end_row + 1
   vim.cmd(("%d%s"):format(a, fold_closed(h) and "foldopen" or "foldclose"))
   vim.api.nvim_win_set_cursor(win, { h.row + 1, 0 })
-  decorate(P)
 end
 
 --- Backwards-compatible name for `:DmbdipPreview`.
@@ -1278,7 +1268,43 @@ function M.close_all()
   end
 end
 
+-- Decorations are drawn per window at redraw time (ephemeral extmarks), so
+-- they follow each window's folds and cursor whatever changed them (zc, zM,
+-- mouse, search), with no fold event to listen to.
+vim.api.nvim_set_decoration_provider(marks_ns, {
+  on_win = function(_, win, buf, toprow, botrow)
+    local P = preview_of_buf(buf)
+    if not P or not P.layout then
+      drawn[win] = nil
+      return false
+    end
+    local d = decorations(P, win, toprow, botrow)
+    d.col = P.layout.offset_cols
+    drawn[win] = d
+  end,
+  on_line = function(_, win, buf, row)
+    local d = drawn[win]
+    local chunks = d and d[row]
+    if chunks then
+      vim.api.nvim_buf_set_extmark(buf, marks_ns, row, d.col, {
+        virt_text = chunks,
+        virt_text_pos = "overlay",
+        hl_mode = "combine",
+        ephemeral = true,
+      })
+    end
+  end,
+})
+
 -- Test hooks.
+--- Decorations `win` would draw for rows `[a, b]` (default: all rows).
+M._decorations = function(win, a, b)
+  local P = preview_of_buf(vim.api.nvim_win_get_buf(win))
+  if not P or not P.layout then
+    return {}
+  end
+  return decorations(P, win, a or 0, b or P.layout.total_rows - 1)
+end
 M._pump = function(src)
   local P = previews[src]
   if P then

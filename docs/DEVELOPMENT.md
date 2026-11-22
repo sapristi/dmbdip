@@ -65,13 +65,16 @@
   their image-id colours). Neovim owns the fold state: the plugin reads it back
   (`foldclosed()`) only to rebuild the folds, keyed by level + title + occurrence, before a
   re-layout replaces the lines and when a window toggles out (restored when it shows the
-  preview again; a new window starts unfolded). The layout is requested 2 columns narrower and
-  each line starts with `offset_cols + 2` spaces: these 2 columns hold overlay extmarks
-  (namespace `dmbdip_marks`, rows near the view) with the current-heading bar (`DmbdipCursor`)
-  and the ▼/▶ arrow (`DmbdipHeading<level>`), refreshed on `CursorMoved`, `WinScrolled`, after
-  a layout and after the heading functions. `next_heading`/`prev_heading`/`toggle_fold` (and
-  `:DmbdipNextHeading`, `:DmbdipPrevHeading`, `:DmbdipFold`) act on the heading at or above the
-  cursor. Designs:
+  preview again; a `:DmbdipPreview` split starts unfolded). The layout is requested 2 columns narrower and
+  each line starts with `offset_cols + 2` spaces: these 2 columns hold the current-heading bar
+  (`DmbdipCursor`) and the ▼/▶ arrow (`DmbdipHeading<level>`), drawn by a decoration provider
+  (namespace `dmbdip_marks`): `on_win` computes, for that window's visible rows, its own fold
+  state and current heading, `on_line` sets ephemeral overlay extmarks. Any fold change
+  (`zc`, `zM`, mouse…), cursor move or scroll redraws, so the decorations follow with no
+  autocmd, and each window shows its own folds (`:split` copies them, as neovim does).
+  `next_heading`/`prev_heading`/`toggle_fold` (and `:DmbdipNextHeading`, `:DmbdipPrevHeading`,
+  `:DmbdipFold`) act on the current heading: the last one at or above the cursor as shown (a
+  cursor line hidden in a closed fold counts as that fold's first line). Designs:
   `.project/docs/specs/2026-11-22-14-13-nvim-preview-design.md`,
   `.project/docs/specs/2026-11-22-15-30-nvim-toggle-large-docs-design.md`,
   `.project/docs/specs/2026-11-22-17-52-nvim-preview-headings-design.md`.
