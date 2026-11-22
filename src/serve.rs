@@ -1,12 +1,15 @@
-//! Headless render server for editor previews (`dmbdip --serve`), protocol 2.
+//! Headless render server for editor previews (`dmbdip --serve`), protocol 3.
 //!
 //! Reads line-delimited JSON requests on stdin and answers one JSON line per
-//! request. A `layout` request parses and lays out a document and keeps it; a
+//! request. A `layout` request parses and lays out a document and keeps it,
+//! with heading slots aligned to cell rows (so the editor can fold whole rows),
+//! and answers the rows of every heading and the cursor colour; a
 //! `strips` request renders some horizontal strips of the kept document and
 //! writes them as raw RGB files that the terminal reads (kitty `t=t`). No
 //! full-page image is ever allocated, so memory does not grow with the
 //! document's length.
-//! See `.project/docs/specs/2026-11-22-15-30-nvim-toggle-large-docs-design.md`.
+//! See `.project/docs/specs/2026-11-22-15-30-nvim-toggle-large-docs-design.md` and
+//! `.project/docs/specs/2026-11-22-17-52-nvim-preview-headings-design.md`.
 
 use std::io::{self, BufRead, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -21,12 +24,14 @@ use crate::fonts::Fonts;
 use crate::headings::build_headings;
 use crate::mermaid::MermaidCache;
 use crate::parsing::parse_markdown;
-use crate::render::{layout_blocks, render_region, BlockLayout};
+use crate::render::{heading_style, layout_blocks, render_region, BlockLayout};
+use crate::text::spans_to_plain;
 use crate::theme::Theme;
 use crate::types::{Block, HeadingInfo};
+use pulldown_cmark::HeadingLevel;
 
 /// Version of the request/response protocol; the plugin refuses others.
-pub(crate) const PROTOCOL: u32 = 2;
+pub(crate) const PROTOCOL: u32 = 3;
 /// Unicode placeholders carry the row in a diacritic; kitty defines 297 of them.
 pub(crate) const MAX_STRIP_ROWS: u32 = 297;
 /// Upper bounds that keep a bad request from allocating absurd images.
@@ -66,6 +71,30 @@ pub(crate) struct LayoutResponse {
     pub(crate) nstrips: u32,
     pub(crate) bg: String,
     pub(crate) anchors: Vec<(usize, u32)>,
+    /// `#rrggbb` of the theme's cursor colour (current-heading bar).
+    pub(crate) cursor: String,
+    /// Every heading, in document order.
+    pub(crate) headings: Vec<HeadingEntry>,
+}
+
+/// A heading's rows in the laid-out page. Its slot covers rows
+/// `[row, end_row]`; its text starts on `text_row` (after an H1's margin).
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct HeadingEntry {
+    pub(crate) level: u8,
+    /// 1-based source line.
+    pub(crate) line: usize,
+    pub(crate) row: u32,
+    pub(crate) text_row: u32,
+    pub(crate) end_row: u32,
+    pub(crate) title: String,
+    /// `#rrggbb` of the heading level's colour.
+    pub(crate) color: String,
+}
+
+fn hex(c: image::Rgb<u8>) -> String {
+    let [r, g, b] = c.0;
+    format!("#{r:02x}{g:02x}{b:02x}")
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -221,7 +250,7 @@ impl<'a> Server<'a> {
         let (blocks, source_lines) = parse_markdown(&req.text);
         let headings = build_headings(&blocks);
         let (layouts, total_height) = layout_blocks(
-            &blocks, &headings, width, self.fonts, self.theme, self.layout, &mut self.mermaid_cache, 1,
+            &blocks, &headings, width, self.fonts, self.theme, self.layout, &mut self.mermaid_cache, cell_h,
         );
         let total_rows = total_height.div_ceil(cell_h).max(1);
         let nstrips = total_rows.div_ceil(strip_rows);
@@ -231,6 +260,26 @@ impl<'a> Server<'a> {
             .filter_map(|b| source_lines.get(b.block_index).map(|&line| (line, b.y / cell_h)))
             .collect();
         anchors.sort_by_key(|&(line, _)| line);
+
+        let headings_out: Vec<HeadingEntry> = layouts
+            .iter()
+            .filter_map(|b| match &blocks[b.block_index] {
+                Block::Heading { level, spans } => {
+                    let margin = if matches!(level, HeadingLevel::H1) { l.h1_extra_margin } else { 0 };
+                    Some(HeadingEntry {
+                        level: *level as u8,
+                        line: source_lines.get(b.block_index).copied().unwrap_or(1),
+                        row: b.y / cell_h,
+                        text_row: (b.y + margin) / cell_h,
+                        // Rounded up: the last slot need not end on a row.
+                        end_row: (b.y + b.height).div_ceil(cell_h) - 1,
+                        title: spans_to_plain(spans),
+                        color: hex(heading_style(level, self.theme).1),
+                    })
+                }
+                _ => None,
+            })
+            .collect();
 
         self.doc_counter += 1;
         let doc = self.doc_counter;
@@ -247,7 +296,6 @@ impl<'a> Server<'a> {
             total_rows,
             nstrips,
         });
-        let [r, g, b] = self.theme.bg.0;
         Ok(LayoutResponse {
             id: req.id,
             kind: "layout".into(),
@@ -258,8 +306,10 @@ impl<'a> Server<'a> {
             total_rows,
             strip_rows,
             nstrips,
-            bg: format!("#{r:02x}{g:02x}{b:02x}"),
+            bg: hex(self.theme.bg),
             anchors,
+            cursor: hex(self.theme.cursor_color),
+            headings: headings_out,
         })
     }
 
@@ -349,7 +399,6 @@ pub(crate) fn run_serve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::render_markdown;
     use crate::test_helpers::{test_fonts, SAMPLE_MD};
     use crate::theme::default_theme;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -515,14 +564,15 @@ mod tests {
             stitched.extend_from_slice(bytes);
         }
 
+        // The full page drawn from the same row-aligned layout.
         let fonts = test_fonts();
         let theme = default_theme();
+        let params = LayoutParams::default();
         let (blocks, _) = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
         let mut cache = MermaidCache::new();
-        let (full, _, _) = render_markdown(
-            &blocks, &mut headings, width, 0, &fonts, &theme, &LayoutParams::default(), &mut cache, false,
-        );
+        let (layouts, total) = layout_blocks(&blocks, &headings, width, &fonts, &theme, &params, &mut cache, CELL_H);
+        let full = render_region(&blocks, &mut headings, width, &fonts, &theme, &params, &mut cache, false, &layouts, 0, total);
         let raw = full.as_raw();
         assert_eq!(&stitched[..raw.len()], &raw[..], "strips equal the full render");
         assert!(stitched[raw.len()..].chunks(3).all(|p| p == theme.bg.0), "padding is bg");
@@ -538,8 +588,34 @@ mod tests {
             assert!(w[0].0 <= w[1].0, "lines sorted: {:?}", w);
             assert!(w[0].1 <= w[1].1, "rows non-decreasing: {:?}", w);
         }
-        assert_eq!(resp.anchors[0], (1, LayoutParams::default().paragraph_gap / CELL_H));
+        // SAMPLE_MD starts with a heading, whose slot is aligned to a row.
+        assert_eq!(resp.anchors[0], (1, LayoutParams::default().paragraph_gap.div_ceil(CELL_H)));
         assert!(resp.anchors.last().unwrap().1 < resp.total_rows);
+    }
+
+    #[test]
+    fn layout_reports_heading_rows_and_cursor() {
+        let dir = TempDir::new();
+        let md = "# A\n\nText a.\n\n## A1\n\nText a1.\n\n### A1a\n\nText a1a.\n\n## A2\n\nText a2.\n\n# B\n\nText b.\n";
+        let resp = with_server(&dir, |s| layout(s, &layout_req(1, md, 80, 50)));
+        assert_eq!(PROTOCOL, 3);
+        let theme = default_theme();
+        assert_eq!(resp.cursor, hex(theme.cursor_color));
+        let got: Vec<(u8, &str, usize)> = resp.headings.iter().map(|h| (h.level, h.title.as_str(), h.line)).collect();
+        assert_eq!(got, vec![(1, "A", 1), (2, "A1", 5), (3, "A1a", 9), (2, "A2", 13), (1, "B", 17)]);
+        assert_eq!(resp.headings[0].color, hex(theme.h1_color));
+        assert_eq!(resp.headings[1].color, hex(theme.h2_color));
+        let h1 = &resp.headings[0];
+        assert_eq!(h1.text_row, (h1.row * CELL_H + LayoutParams::default().h1_extra_margin) / CELL_H, "H1 text after its margin");
+        for h in &resp.headings {
+            assert!(h.row <= h.text_row && h.text_row <= h.end_row, "{h:?}");
+            assert!(h.end_row < resp.total_rows);
+            assert!(resp.anchors.contains(&(h.line, h.row)), "row of {h:?} is its anchor row");
+        }
+        for w in resp.headings.windows(2) {
+            assert!(w[0].row < w[1].row, "rows increase: {w:?}");
+            assert!(w[0].end_row < w[1].row, "slots don't overlap: {w:?}");
+        }
     }
 
     #[test]
