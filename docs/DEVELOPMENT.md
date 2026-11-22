@@ -25,24 +25,30 @@
   sizes (unbounded) apart from rasterized images (unbounded in the TUI, 16 LRU in serve mode).
 - Kitty display: double-buffered with alternating image IDs, raw RGB, BufWriter
 - Alternate screen mode for proper key passthrough
-- Serve mode (`dmbdip --serve`, `src/serve.rs`), protocol 2: headless, no TUI, one JSON request
-  per line on stdin, one JSON response line on stdout; every response has `"protocol": 2`.
+- Serve mode (`dmbdip --serve`, `src/serve.rs`), protocol 3: headless, no TUI, one JSON request
+  per line on stdin, one JSON response line on stdout; every response has `"protocol": 3`.
+  Serve lays out with `row_align = cell_h` (`layout_blocks`' last parameter; the TUI passes 1,
+  which leaves the layout unchanged): each heading slot starts and ends on a cell row (the
+  previous slot grows to the rounded-up `y`), so the plugin can fold whole buffer lines.
   - `layout` (`id, text, cols, cell_w, cell_h, strip_rows`): parses and lays out the document and
     keeps it; renders nothing. Image width = `min(cols × cell_w, max_content_width + margins)`
     rounded down to whole cells. Answers `doc` (incremented per layout), `image_cols`,
     `offset_cols = (cols − image_cols) / 2`, `total_rows`, `strip_rows` (clamped to 1..297, the
-    unicode placeholder row-diacritic limit), `nstrips`, `bg` (`#rrggbb`) and
-    `anchors[[line, row]]` (each block's source line and cell row).
+    unicode placeholder row-diacritic limit), `nstrips`, `bg` (`#rrggbb`),
+    `anchors[[line, row]]` (each block's source line and cell row), `cursor` (`#rrggbb`, the
+    theme's cursor colour) and `headings[{level, line, row, text_row, end_row, title, color}]`
+    (document order; the slot covers rows `[row, end_row]`, `text_row` skips an H1's margin,
+    `color` is the level's colour).
   - `strips` (`id, doc, indices`): renders those strips of the kept document with
     `render_region` and writes each as raw RGB (`image_cols·cell_w × rows·cell_h`, last strip
     padded with `bg`) to `dmbdip-<pid>-tty-graphics-protocol-<n>.rgb` in `/dev/shm` (else the
     temp dir); kitty reads and deletes them (`t=t`). Answers `strips[{index, rows, path}]`. A
     `doc` other than the current one gets `{"type": "stale", "doc": <current>}`.
   - Errors: `{"type": "error", "id", "message"}`. Leftover files are removed at stdin EOF.
-- Neovim plugin (repo root is a plugin): `plugin/dmbdip.lua` defines `:DmbdipToggle` and
-  `:DmbdipPreview`; `lua/dmbdip/init.lua` keeps one preview per source buffer: a
+- Neovim plugin (repo root is a plugin): `plugin/dmbdip.lua` defines `:DmbdipToggle`,
+  `:DmbdipPreview` and the heading commands; `lua/dmbdip/init.lua` keeps one preview per source buffer: a
   `dmbdip --serve` job, a preview buffer (`bufhidden=hide`) of `total_rows` lines of
-  `offset_cols` spaces then `U+10EEEE` placeholders coloured by image id (`base + strip index`),
+  `offset_cols + 2` spaces then `U+10EEEE` placeholders coloured by image id (`base + strip index`),
   and the set of strips loaded in the terminal. `:DmbdipToggle` swaps the current window's
   buffer (position mapped through the anchors both ways); `:DmbdipPreview` shows the same
   buffer in a split with live re-layout on edit and source → preview scroll sync. One request
@@ -51,9 +57,24 @@
   `[top − H, bot + H]` that are not loaded are requested, and strips entirely outside
   `[top − 3H, bot + 3H]` are deleted (`a=d,d=I`); all are deleted when the preview buffer is no
   longer shown. Graphics commands go through `Snacks.image.terminal.request` (`q=2`, tmux
-  passthrough). `lua/dmbdip/diacritics.lua` is kitty's row/column diacritics table. Designs:
+  passthrough). `lua/dmbdip/diacritics.lua` is kitty's row/column diacritics table.
+  Folding: the preview buffer (`filetype=dmbdip`) gets neovim manual folds, one per heading with
+  content, over rows `[end_row, stop − 1]` (`stop` = row of the next heading of the same or
+  higher level, as `is_block_folded`), so a closed fold's line is the heading's last row shown
+  as is (`foldtext=""`, `Folded` mapped to the empty `DmbdipFolded` so the placeholders keep
+  their image-id colours). Neovim owns the fold state: the plugin reads it back
+  (`foldclosed()`) only to rebuild the folds, keyed by level + title + occurrence, before a
+  re-layout replaces the lines and when a window toggles out (restored when it shows the
+  preview again; a new window starts unfolded). The layout is requested 2 columns narrower and
+  each line starts with `offset_cols + 2` spaces: these 2 columns hold overlay extmarks
+  (namespace `dmbdip_marks`, rows near the view) with the current-heading bar (`DmbdipCursor`)
+  and the ▼/▶ arrow (`DmbdipHeading<level>`), refreshed on `CursorMoved`, `WinScrolled`, after
+  a layout and after the heading functions. `next_heading`/`prev_heading`/`toggle_fold` (and
+  `:DmbdipNextHeading`, `:DmbdipPrevHeading`, `:DmbdipFold`) act on the heading at or above the
+  cursor. Designs:
   `.project/docs/specs/2026-11-22-14-13-nvim-preview-design.md`,
-  `.project/docs/specs/2026-11-22-15-30-nvim-toggle-large-docs-design.md`.
+  `.project/docs/specs/2026-11-22-15-30-nvim-toggle-large-docs-design.md`,
+  `.project/docs/specs/2026-11-22-17-52-nvim-preview-headings-design.md`.
 - `build.rs` sets `DMBDIP_VERSION` (shown by `--version`): plain package version at the `v<version>` tag or without git, otherwise appends `git describe` output, e.g. `0.7.0 (v0.7.0-3-g1a2b3c4-dirty)`
 
 ## Workflow Rules

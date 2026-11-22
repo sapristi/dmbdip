@@ -22,20 +22,13 @@ The same strip design is the basis of the neovim preview (T-002): there, strips 
 kitty unicode placeholders (virtual placements, `U=1`), at most 297 rows per image because of
 the row diacritics, so neovim scrolls the preview buffer natively.
 
-## T-003 — nvim preview: folding, heading keys, SSH delivery
+## T-003 — nvim preview: source folds, SSH delivery, smooth scrolling
 created: 2026-11-22 14:04
 
-Follow-up to T-002 (first version: `--serve` + minimal Lua plugin with live render and scroll
-sync only). Remaining from the T-002 spec:
+Follow-up to T-002. Folding, heading navigation and the ▶/▼ arrows / current-heading bar in the
+preview are done (`.project/docs/specs/2026-11-22-17-52-nvim-preview-headings-design.md`).
+Remaining:
 
-- Folding in the preview buffer with manual folds, no re-render: serve mode pads each heading to
-  a cell-row boundary and returns per heading its rows, level and source line. A fold spans the
-  rows after the heading up to the next heading of the same or higher level (same rule as
-  `is_block_folded`, `src/headings.rs`), so the heading stays visible.
-- ▶/▼ arrows and the orange current-heading bar drawn by neovim (signs / virt_text from
-  `foldclosed()`, line highlight) instead of in the image; heading numbers stay in the image.
-- Keys in the preview buffer: Tab/S-Tab → next/prev visible heading row placed at 1/4 of the
-  window (as `navigate_heading`, `src/state.rs`); Space → `za`.
 - Optional: mirror source-buffer folds into the preview (no fold event: check `foldclosed()` on
   CursorMoved/WinScrolled or wrap zc/zo/za).
 - Strip delivery when neovim runs over SSH: pixels must go through the pty (zlib `o=z`).
