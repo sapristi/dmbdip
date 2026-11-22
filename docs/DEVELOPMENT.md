@@ -54,6 +54,7 @@
   passthrough). `lua/dmbdip/diacritics.lua` is kitty's row/column diacritics table. Designs:
   `.project/docs/specs/2026-11-22-14-13-nvim-preview-design.md`,
   `.project/docs/specs/2026-11-22-15-30-nvim-toggle-large-docs-design.md`.
+- `build.rs` sets `DMBDIP_VERSION` (shown by `--version`): plain package version at the `v<version>` tag or without git, otherwise appends `git describe` output, e.g. `0.7.0 (v0.7.0-3-g1a2b3c4-dirty)`
 
 ## Workflow Rules
 

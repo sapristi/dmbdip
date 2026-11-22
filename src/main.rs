@@ -78,7 +78,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
                 std::process::exit(0);
             }
             Short('v') | Long("version") => {
-                eprintln!("dmbdip {}", env!("CARGO_PKG_VERSION"));
+                eprintln!("dmbdip {}", env!("DMBDIP_VERSION"));
                 std::process::exit(0);
             }
             Long("debug") => debug = true,
