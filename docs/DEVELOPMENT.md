@@ -16,6 +16,22 @@
 - Two-pass rendering: compute height, then draw to RgbImage (re-renders on fold/nav changes)
 - Kitty display: double-buffered with alternating image IDs, raw RGB, BufWriter
 - Alternate screen mode for proper key passthrough
+- Serve mode (`dmbdip --serve`, `src/serve.rs`): headless, no TUI. Reads one JSON render request
+  per line on stdin (`id, type="render", text, cols, cell_w, cell_h`) and answers one JSON line
+  (`id, type="render", cols, total_rows, strips[{index, rows, path|null}], anchors[[line, row]]`,
+  or `type="error"`). Renders at `cols × cell_w` px without fold arrows, pads to whole cell rows,
+  cuts into strips of ≤297 rows (unicode placeholder row-diacritic limit) and writes only changed
+  strips (hash of pixels, or geometry change) as raw RGB files named
+  `dmbdip-<pid>-tty-graphics-protocol-<n>.rgb` in `/dev/shm` (else the temp dir); kitty reads and
+  deletes them (`t=t`). Leftover files are removed at stdin EOF. Anchors map each block's source
+  line to its cell row.
+- Neovim plugin (repo root is a plugin): `plugin/dmbdip.lua` defines `:DmbdipPreview`;
+  `lua/dmbdip/init.lua` runs one `dmbdip --serve` job per source buffer, sends debounced render
+  requests (one in flight), transmits strips via `Snacks.image.terminal.request` (`q=2`, tmux
+  passthrough) with image ids `base + index`, fills the preview buffer with `U+10EEEE`
+  placeholders coloured by id, and syncs the preview's topline from the anchors;
+  `lua/dmbdip/diacritics.lua` is kitty's row/column diacritics table. Design:
+  `.project/docs/specs/2026-11-22-14-13-nvim-preview-design.md`.
 
 ## Workflow Rules
 
@@ -26,6 +42,12 @@
 ## Manual testing
 
 The file docs/sample.md can be used for manual testing
+
+Neovim plugin smoke test (headless, stubs snacks), after `cargo build`:
+
+```
+nvim --headless -u NONE --cmd 'set rtp^=.' -l tests/nvim/smoke.lua
+```
 
 # Track advancement
 

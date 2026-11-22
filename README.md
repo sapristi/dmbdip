@@ -8,10 +8,13 @@ A Rust program that renders markdown files as images and displays them in the te
 
 ```
 dmbdip [markdown-file-or-directory]
+dmbdip --serve
 dmbdip --help
 ```
 
 When given a markdown file, opens it full-width with the file list hidden. Press Left to reveal the file list and browse sibling files. When given a directory (or no argument), opens the file browser with a file list on the left and markdown preview on the right.
+
+`dmbdip --serve` runs a headless render server (line-delimited JSON on stdin/stdout) used by the [Neovim preview](#neovim-preview).
 
 **Requirements:**  a terminal supporting the [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/), DejaVu fonts installed.
 
@@ -77,6 +80,30 @@ cargo install --path . --root ~/.local
 | Ctrl-H | Toggle hidden files |
 | h | Show help |
 | q/Esc/Ctrl-C | Quit |
+
+## Neovim preview
+
+A live preview pane inside neovim: `:DmbdipPreview` opens a vertical split showing the current markdown buffer rendered by dmbdip. It follows unsaved edits and scrolls with the source window. Run `:DmbdipPreview` again (or close the split) to close it.
+
+**Requirements:**
+
+- a terminal supporting kitty unicode image placeholders (kitty, ghostty; tmux with passthrough works)
+- `termguicolors` enabled
+- [snacks.nvim](https://github.com/folke/snacks.nvim)
+- `dmbdip` on `$PATH`
+- neovim and the terminal on the same machine (not over SSH yet)
+
+Install with [lazy.nvim](https://github.com/folke/lazy.nvim):
+
+```lua
+{
+  "sapristi/dmbdip",
+  dependencies = { "folke/snacks.nvim" },
+  opts = {}, -- optional: { cmd = "dmbdip", debounce_ms = 150 }
+}
+```
+
+**Known limits:** no folding or heading navigation in the preview yet; scrolling is by cell rows; very long documents (roughly 4,000+ source lines, fewer on HiDPI) can exceed kitty's image storage and show blank regions.
 
 ## Configuration
 
