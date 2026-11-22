@@ -43,3 +43,19 @@ sync only). Remaining from the T-002 spec:
   and silently evicts oldest images → blank regions). Needs Lua to request strips on scroll and
   the server to keep strip pixels between requests. T-002 accepted the limit.
 - Sub-row smooth scrolling (kitty placement source-rect crop, untested with unicode placeholders).
+
+## T-004 — nvim preview: incremental updates instead of whole buffer
+created: 2026-11-22 15:20
+
+Today every debounced edit sends the whole buffer text (`lua/dmbdip/init.lua:100`,
+`nvim_buf_get_lines(0, -1)`) and `src/serve.rs` re-parses and re-renders the full page, then
+hashes every strip to find which changed. Measure first (`--debug` timing log, a large markdown
+file) to see where time goes.
+
+- Text transfer is likely cheap (a pipe, tens of KB). If it matters: send line-range diffs from
+  `nvim_buf_attach` `on_lines` (first line, old last line, new lines) and keep the text in the
+  server; resend full text on mismatch (add a change counter to detect lost updates).
+- The bigger cost is likely the full parse + render. Incremental option: re-render only the
+  blocks from the first changed source line on, reusing the image above it (block y positions
+  are known from `render_markdown`'s `block_positions`); strips above the change are then
+  unchanged by construction, no hashing needed.
