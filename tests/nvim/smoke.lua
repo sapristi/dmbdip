@@ -132,5 +132,50 @@ check(vim.fn.jobwait({ P.job }, 5000)[1] ~= -1, "server did not exit")
 local leftovers = vim.fn.glob("/dev/shm/dmbdip-" .. pid .. "-tty-graphics-protocol-*", false, true)
 check(#leftovers == 0, "leftover strip files: " .. vim.inspect(leftovers))
 
+-- Missing server binary: error, no window or state left behind.
+local notes = {}
+local orig_notify = vim.notify
+vim.notify = function(msg, level)
+  notes[#notes + 1] = { msg = msg, level = level }
+end
+local wins = #vim.api.nvim_list_wins()
+dmbdip.setup({ cmd = root .. "/target/debug/no-such-dmbdip" })
+vim.cmd("DmbdipPreview")
+check(dmbdip._previews[src] == nil, "no preview state without a server binary")
+check(#vim.api.nvim_list_wins() == wins, "no split without a server binary")
+check(#notes == 1 and notes[1].msg:find("not found"), "not-found error: " .. vim.inspect(notes))
+dmbdip.setup({ cmd = root .. "/target/debug/dmbdip" })
+
+-- Too narrow window: the repeated server error is notified once.
+notes = {}
+vim.cmd("DmbdipPreview")
+P = dmbdip._previews[src]
+check(P ~= nil, "preview reopened")
+vim.api.nvim_win_set_width(P.win, 5)
+local function errors()
+  return #vim.tbl_filter(function(n)
+    return n.level == vim.log.levels.WARN
+  end, notes)
+end
+for _ = 1, 3 do
+  local id = P.next_id
+  P.last_sent = nil
+  vim.api.nvim_exec_autocmds("TextChanged", { buffer = src })
+  check(vim.wait(5000, function()
+    return P.next_id > id and not P.in_flight
+  end, 10), "narrow render request not answered")
+end
+check(errors() == 1, "narrow-width error should be shown once, got " .. errors())
+
+-- :bdelete of the source closes the preview and stops the server.
+local job = P.job
+local win = P.win
+vim.cmd("bdelete! " .. src)
+check(vim.wait(5000, function()
+  return dmbdip._previews[src] == nil and not vim.api.nvim_win_is_valid(win)
+end, 10), "bdelete should close the preview")
+check(vim.fn.jobwait({ job }, 5000)[1] ~= -1, "server did not exit after bdelete")
+vim.notify = orig_notify
+
 print("ok")
 os.exit(0)

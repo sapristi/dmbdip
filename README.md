@@ -89,6 +89,7 @@ A live preview pane inside neovim: `:DmbdipPreview` opens a vertical split showi
 
 - a terminal supporting kitty unicode image placeholders (kitty, ghostty; tmux with passthrough works)
 - `termguicolors` enabled
+- `ambiwidth=single` (the default): `ambiwidth=double` is not supported, it makes each placeholder cell 2 columns wide
 - [snacks.nvim](https://github.com/folke/snacks.nvim)
 - `dmbdip` on `$PATH`
 - neovim and the terminal on the same machine (not over SSH yet)

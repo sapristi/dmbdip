@@ -242,8 +242,15 @@ local function on_response(P, line)
   if not ok or type(resp) ~= "table" then
     notify("bad response from server: " .. line, vim.log.levels.WARN)
   elseif resp.type == "error" then
-    notify(tostring(resp.message), vim.log.levels.WARN)
+    -- Repeated errors (e.g. a too narrow window on every edit) are shown once
+    -- until a render succeeds again.
+    local msg = tostring(resp.message)
+    if msg ~= P.last_error then
+      P.last_error = msg
+      notify(msg, vim.log.levels.WARN)
+    end
   elseif resp.type == "render" and geom then
+    P.last_error = nil
     apply(P, resp, geom)
   end
   if P.pending then
@@ -306,6 +313,10 @@ local function open(src)
     notify("not a markdown buffer", vim.log.levels.WARN)
     return
   end
+  if vim.fn.executable(config.cmd) ~= 1 then
+    notify("dmbdip not found: " .. tostring(config.cmd), vim.log.levels.ERROR)
+    return
+  end
   if term.env then
     pcall(term.env) -- detects the terminal; sets up tmux passthrough
   end
@@ -359,7 +370,7 @@ local function open(src)
   }
   previews[src] = P
 
-  P.job = vim.fn.jobstart({ config.cmd, "--serve" }, {
+  local started, job = pcall(vim.fn.jobstart, { config.cmd, "--serve" }, {
     stdin = "pipe",
     on_stdout = line_reader(function(line)
       on_response(P, line)
@@ -374,8 +385,9 @@ local function open(src)
       end
     end,
   })
+  P.job = started and job or 0
   if P.job <= 0 then
-    notify("could not start " .. tostring(config.cmd), vim.log.levels.ERROR)
+    notify("could not start " .. tostring(config.cmd) .. (started and "" or (": " .. tostring(job))), vim.log.levels.ERROR)
     P.job = nil
     close(P)
     return
@@ -420,10 +432,12 @@ local function open(src)
       check_resize(P)
     end,
   })
-  au("BufWipeout", {
+  au({ "BufWipeout", "BufDelete", "BufUnload" }, {
     buffer = src,
     callback = function()
-      close(P)
+      vim.schedule(function()
+        close(P)
+      end)
     end,
   })
   au("BufWipeout", {
