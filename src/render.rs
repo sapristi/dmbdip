@@ -131,6 +131,7 @@ pub(crate) fn render_markdown(
     theme: &Theme,
     layout: &LayoutParams,
     mermaid_cache: &mut crate::mermaid::MermaidCache,
+    fold_arrows: bool,
 ) -> (RgbImage, Vec<(usize, u32)>, u32) {
     let content_width = (width - layout.margin_left - layout.margin_right).min(layout.max_content_width);
     let margin_left = (width - content_width) / 2;
@@ -175,21 +176,23 @@ pub(crate) fn render_markdown(
                 headings[hi].y_pos = y;
                 headings[hi].heading_height = heading_total_h;
 
-                let fold_char = if headings[hi].folded { "▶" } else { "▼" };
-                let arrow_scale = PxScale::from(size * 0.5);
-                let arrow_w = text_size(arrow_scale, &fonts.bold, fold_char).0;
-                let arrow_x = margin_left as i32 - arrow_w as i32 - 4;
+                if fold_arrows {
+                    let fold_char = if headings[hi].folded { "▶" } else { "▼" };
+                    let arrow_scale = PxScale::from(size * 0.5);
+                    let arrow_w = text_size(arrow_scale, &fonts.bold, fold_char).0;
+                    let arrow_x = margin_left as i32 - arrow_w as i32 - 4;
 
-                let arrow_y_offset = ((size - size * 0.5) * 0.5) as i32;
-                draw_text_mut(
-                    &mut img,
-                    color,
-                    arrow_x,
-                    y as i32 + arrow_y_offset,
-                    arrow_scale,
-                    &fonts.bold,
-                    fold_char,
-                );
+                    let arrow_y_offset = ((size - size * 0.5) * 0.5) as i32;
+                    draw_text_mut(
+                        &mut img,
+                        color,
+                        arrow_x,
+                        y as i32 + arrow_y_offset,
+                        arrow_scale,
+                        &fonts.bold,
+                        fold_char,
+                    );
+                }
 
                 for line in &lines {
                     for span in line {
@@ -752,7 +755,7 @@ mod tests {
         let (blocks, _) = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
         let mut mermaid_cache = MermaidCache::new();
-        let (img, positions, margin_left) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache);
+        let (img, positions, margin_left) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache, true);
 
         assert!(img.width() == 800);
         assert!(img.height() > 100, "image too short: {}", img.height());
@@ -768,7 +771,7 @@ mod tests {
         let (blocks, _) = parse_markdown(SAMPLE_MD);
         let mut headings = build_headings(&blocks);
         let mut mermaid_cache = MermaidCache::new();
-        render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache);
+        render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache, true);
 
         for i in 1..headings.len() {
             assert!(
@@ -791,12 +794,12 @@ mod tests {
 
         let mut headings_open = build_headings(&blocks);
         let mut mermaid_cache = MermaidCache::new();
-        let (img_open, _, _) = render_markdown(&blocks, &mut headings_open, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache);
+        let (img_open, _, _) = render_markdown(&blocks, &mut headings_open, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache, true);
 
         let mut headings_folded = build_headings(&blocks);
         headings_folded[0].folded = true;
         let mut mermaid_cache = MermaidCache::new();
-        let (img_folded, _, _) = render_markdown(&blocks, &mut headings_folded, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache);
+        let (img_folded, _, _) = render_markdown(&blocks, &mut headings_folded, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache, true);
 
         assert!(
             img_folded.height() < img_open.height(),
@@ -831,7 +834,7 @@ mod tests {
         let (blocks, _) = parse_markdown(md);
         let mut headings = build_headings(&blocks);
         let mut mermaid_cache = MermaidCache::new();
-        let (img, _, _) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache);
+        let (img, _, _) = render_markdown(&blocks, &mut headings, 800, 600, &fonts, &theme, &layout, &mut mermaid_cache, true);
         assert!(img.height() > 100);
     }
 
@@ -844,7 +847,7 @@ mod tests {
             let (blocks, _) = parse_markdown(SAMPLE_MD);
             let mut headings = build_headings(&blocks);
             let mut mermaid_cache = MermaidCache::new();
-            let (img, _, _) = render_markdown(&blocks, &mut headings, width, 600, &fonts, &theme, &layout, &mut mermaid_cache);
+            let (img, _, _) = render_markdown(&blocks, &mut headings, width, 600, &fonts, &theme, &layout, &mut mermaid_cache, true);
             assert_eq!(img.width(), width);
             assert!(img.height() > 0);
         }
@@ -862,12 +865,12 @@ mod tests {
         let (b1, _) = parse_markdown(without);
         let mut h1 = build_headings(&b1);
         let mut cache1 = MermaidCache::new();
-        let (img1, _, _) = render_markdown(&b1, &mut h1, 800, 600, &fonts, &theme, &layout, &mut cache1);
+        let (img1, _, _) = render_markdown(&b1, &mut h1, 800, 600, &fonts, &theme, &layout, &mut cache1, true);
 
         let (b2, _) = parse_markdown(with);
         let mut h2 = build_headings(&b2);
         let mut cache2 = MermaidCache::new();
-        let (img2, _, _) = render_markdown(&b2, &mut h2, 800, 600, &fonts, &theme, &layout, &mut cache2);
+        let (img2, _, _) = render_markdown(&b2, &mut h2, 800, 600, &fonts, &theme, &layout, &mut cache2, true);
 
         assert!(
             img2.height() > img1.height(),
@@ -916,12 +919,34 @@ mod tests {
         let mut headings2 = build_headings(&blocks);
         let mut cache = MermaidCache::new();
 
-        let (img1, _, _) = render_markdown(&blocks, &mut headings1, 800, 600, &fonts, &theme, &layout, &mut cache);
+        let (img1, _, _) = render_markdown(&blocks, &mut headings1, 800, 600, &fonts, &theme, &layout, &mut cache, true);
         let cache_size_after_first = cache.len();
-        let (img2, _, _) = render_markdown(&blocks, &mut headings2, 800, 600, &fonts, &theme, &layout, &mut cache);
+        let (img2, _, _) = render_markdown(&blocks, &mut headings2, 800, 600, &fonts, &theme, &layout, &mut cache, true);
 
         assert_eq!(img1.height(), img2.height(), "heights must be equal across identical renders");
         assert_eq!(cache.len(), cache_size_after_first, "second render must not add cache entries");
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn render_without_fold_arrows_same_size_different_margin() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
+        let (blocks, _) = parse_markdown(SAMPLE_MD);
+        let mut h1 = build_headings(&blocks);
+        let mut h2 = build_headings(&blocks);
+        let mut cache = MermaidCache::new();
+        let (with, _, margin_left) = render_markdown(&blocks, &mut h1, 800, 600, &fonts, &theme, &layout, &mut cache, true);
+        let (without, _, _) = render_markdown(&blocks, &mut h2, 800, 600, &fonts, &theme, &layout, &mut cache, false);
+
+        assert_eq!(with.dimensions(), without.dimensions());
+        let margin_differs = (0..with.height()).any(|y| {
+            (0..margin_left).any(|x| with.get_pixel(x, y) != without.get_pixel(x, y))
+        });
+        assert!(margin_differs, "fold arrows should be drawn in the left margin only when enabled");
+        let without_margin_blank = (0..without.height())
+            .all(|y| (0..margin_left).all(|x| *without.get_pixel(x, y) == theme.bg));
+        assert!(without_margin_blank, "left margin should be blank without fold arrows");
     }
 }

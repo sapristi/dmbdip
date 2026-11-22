@@ -82,6 +82,7 @@ impl AppState {
             &self.theme,
             &self.layout,
             &mut self.mermaid_cache,
+            true,
         );
         self.img = img;
         self.block_y_positions = positions;
