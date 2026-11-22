@@ -39,9 +39,6 @@ sync only). Remaining from the T-002 spec:
 - Optional: mirror source-buffer folds into the preview (no fold event: check `foldclosed()` on
   CursorMoved/WinScrolled or wrap zc/zo/za).
 - Strip delivery when neovim runs over SSH: pixels must go through the pty (zlib `o=z`).
-- Long documents: keep only strips near the view in kitty (kitty caps image storage at ~320 MB
-  and silently evicts oldest images → blank regions). Needs Lua to request strips on scroll and
-  the server to keep strip pixels between requests. T-002 accepted the limit.
 - Sub-row smooth scrolling (kitty placement source-rect crop, untested with unicode placeholders).
 
 ## T-004 — nvim preview: incremental updates instead of whole buffer

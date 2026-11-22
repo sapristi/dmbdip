@@ -83,7 +83,12 @@ cargo install --path . --root ~/.local
 
 ## Neovim preview
 
-A live preview pane inside neovim: `:DmbdipPreview` opens a vertical split showing the current markdown buffer rendered by dmbdip. It follows unsaved edits and scrolls with the source window. Run `:DmbdipPreview` again (or close the split) to close it.
+Two commands, both for the current markdown buffer:
+
+- `:DmbdipToggle` swaps the current window between the markdown source and its rendered preview, keeping the reading position both ways. This is the main way to read a document: toggle, scroll, toggle back.
+- `:DmbdipPreview` opens the preview in a vertical split that follows unsaved edits and scrolls with the source window. Run it again (or close the split) to close it.
+
+The plugin defines no key mapping; see the `keys` entry below for an example.
 
 **Requirements:**
 
@@ -91,7 +96,7 @@ A live preview pane inside neovim: `:DmbdipPreview` opens a vertical split showi
 - `termguicolors` enabled
 - `ambiwidth=single` (the default): `ambiwidth=double` is not supported, it makes each placeholder cell 2 columns wide
 - [snacks.nvim](https://github.com/folke/snacks.nvim)
-- `dmbdip` on `$PATH`
+- `dmbdip` on `$PATH`, from the same version as the plugin (the plugin refuses an older or newer binary)
 - neovim and the terminal on the same machine (not over SSH yet)
 
 Install with [lazy.nvim](https://github.com/folke/lazy.nvim):
@@ -100,11 +105,15 @@ Install with [lazy.nvim](https://github.com/folke/lazy.nvim):
 {
   "sapristi/dmbdip",
   dependencies = { "folke/snacks.nvim" },
+  cmd = { "DmbdipPreview", "DmbdipToggle" },
+  keys = { { "<leader>mp", "<cmd>DmbdipToggle<cr>", desc = "Toggle markdown preview" } },
   opts = {}, -- optional: { cmd = "dmbdip", debounce_ms = 150 }
 }
 ```
 
-**Known limits:** no folding or heading navigation in the preview yet; scrolling is by cell rows; very long documents (roughly 4,000+ source lines, fewer on HiDPI) can exceed kitty's image storage and show blank regions.
+Large documents are fine: the preview is rendered strip by strip on demand and only the strips near the view are kept in the terminal, so memory does not grow with the document's length.
+
+**Known limits:** no folding or heading navigation in the preview yet; scrolling is by cell rows.
 
 ## Configuration
 
