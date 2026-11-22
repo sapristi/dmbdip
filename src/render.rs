@@ -122,6 +122,232 @@ pub(crate) fn render_preview(
     img
 }
 
+/// Vertical slot of one rendered (unfolded) block. A slot runs from `y` to
+/// the next block's `y`, so it includes the block's trailing gap; an H1's
+/// extra top margin belongs to its own slot. The last slot runs to the end of
+/// the content height.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BlockLayout {
+    pub(crate) block_index: usize,
+    /// Index into `headings` when the block is a heading.
+    pub(crate) heading_index: Option<usize>,
+    pub(crate) y: u32,
+    pub(crate) height: u32,
+}
+
+/// Column geometry for a render width: `(content_width, margin_left)`.
+fn content_geometry(width: u32, layout: &LayoutParams) -> (u32, u32) {
+    let content_width = (width - layout.margin_left - layout.margin_right).min(layout.max_content_width);
+    (content_width, (width - content_width) / 2)
+}
+
+/// Lay out the unfolded blocks without drawing: each block's slot, and the
+/// content height (without the TUI's `vp_height / 2` bottom padding).
+pub(crate) fn layout_blocks(
+    blocks: &[Block],
+    headings: &[HeadingInfo],
+    width: u32,
+    fonts: &Fonts,
+    theme: &Theme,
+    layout: &LayoutParams,
+    mermaid_cache: &mut crate::mermaid::MermaidCache,
+) -> (Vec<BlockLayout>, u32) {
+    let (content_width, _) = content_geometry(width, layout);
+    let mut y: u32 = layout.paragraph_gap;
+    // `compute_table_height` measures 2 px more than `render_table` advances;
+    // the page height keeps those pixels (at the end) so TUI heights stay as
+    // they always were.
+    let mut slack: u32 = 0;
+    let mut heading_idx: usize = 0;
+    let mut out: Vec<BlockLayout> = Vec::new();
+
+    for (bi, block) in blocks.iter().enumerate() {
+        let heading_index = if matches!(block, Block::Heading { .. }) {
+            heading_idx += 1;
+            Some(heading_idx - 1)
+        } else {
+            None
+        };
+        if is_block_folded(bi, headings) {
+            continue;
+        }
+
+        let advance = match block {
+            Block::Metadata { entries } => {
+                let scale = PxScale::from(theme.body_size);
+                let line_height = (theme.body_size * 1.5) as u32;
+                let indented_width = content_width - layout.block_indent;
+                let total_lines: u32 = entries.iter().map(|(k, v)| {
+                    metadata_entry_lines(k, v, fonts, scale, indented_width).len() as u32
+                }).sum();
+                total_lines * line_height + layout.paragraph_gap * 2
+            }
+            Block::Heading { level, spans } => {
+                let margin = if matches!(level, HeadingLevel::H1) { layout.h1_extra_margin } else { 0 };
+                let hi = heading_index.expect("heading block has an index");
+                let (lines, _, line_height) = wrap_heading_text(
+                    &headings[hi], spans, fonts, theme, content_width,
+                );
+                margin + lines.len() as u32 * line_height + layout.paragraph_gap
+            }
+            Block::Paragraph { spans } => {
+                let scale = PxScale::from(theme.body_size);
+                let indented_width = content_width - layout.block_indent;
+                let lines = wrap_spans(spans, fonts, scale, indented_width);
+                let line_height = (theme.body_size * 1.4) as u32;
+                lines.len() as u32 * line_height + layout.paragraph_gap
+            }
+            Block::CodeBlock { text } => {
+                let scale = PxScale::from(theme.body_size);
+                let line_height = (theme.body_size * 1.4) as u32;
+                let indented_width = content_width - layout.block_indent;
+                let wrapped = wrap_code_lines(text, fonts, scale, indented_width - 20);
+                let total_lines = wrapped.iter().map(|w| w.len() as u32).sum::<u32>().max(1);
+                total_lines * line_height + 20 + layout.paragraph_gap
+            }
+            Block::Table { headers, rows } => {
+                slack += 2;
+                compute_table_height(headers, rows, fonts, theme, content_width - layout.block_indent) - 2
+                    + layout.paragraph_gap * 2
+            }
+            Block::List { items } => {
+                compute_list_height(items, fonts, theme, content_width, layout) + layout.paragraph_gap
+            }
+            Block::Mermaid { source } => {
+                let indented_width = content_width - layout.block_indent;
+                let dark = crate::mermaid::is_dark_bg(theme.bg);
+                let diagram = mermaid_cache.get_or_render(
+                    source, indented_width, dark, fonts, theme,
+                );
+                diagram.height() + layout.paragraph_gap
+            }
+        };
+        out.push(BlockLayout { block_index: bi, heading_index, y, height: advance });
+        y += advance;
+    }
+
+    let content_height = y + slack + layout.paragraph_gap;
+    if let Some(last) = out.last_mut() {
+        last.height = content_height - last.y;
+    }
+    (out, content_height)
+}
+
+/// Draw one block at `y` (the top of its slot) onto `img`; returns the y
+/// where the next block starts. For a heading, records its position in
+/// `heading` as `y_base + ` its y in `img`.
+fn draw_block(
+    img: &mut RgbImage,
+    block: &Block,
+    heading: Option<&mut HeadingInfo>,
+    y: u32,
+    y_base: u32,
+    width: u32,
+    fonts: &Fonts,
+    theme: &Theme,
+    layout: &LayoutParams,
+    mermaid_cache: &mut crate::mermaid::MermaidCache,
+    fold_arrows: bool,
+) -> u32 {
+    let (content_width, margin_left) = content_geometry(width, layout);
+    let mut y = y;
+    match block {
+        Block::Metadata { entries } => {
+            y = render_metadata(img, entries, fonts, theme, y, margin_left + layout.block_indent, content_width - layout.block_indent);
+            y += layout.paragraph_gap * 2;
+        }
+        Block::Heading { level, spans } => {
+            if matches!(level, HeadingLevel::H1) {
+                y += layout.h1_extra_margin;
+            }
+            let heading = heading.expect("heading block needs its HeadingInfo");
+
+            let (lines, size, line_height) = wrap_heading_text(
+                heading, spans, fonts, theme, content_width,
+            );
+            let (_, color) = heading_style(level, theme);
+            let scale = PxScale::from(size);
+            let heading_total_h = lines.len() as u32 * line_height;
+
+            heading.y_pos = y_base + y;
+            heading.heading_height = heading_total_h;
+
+            if fold_arrows {
+                let fold_char = if heading.folded { "▶" } else { "▼" };
+                let arrow_scale = PxScale::from(size * 0.5);
+                let arrow_w = text_size(arrow_scale, &fonts.bold, fold_char).0;
+                let arrow_x = margin_left as i32 - arrow_w as i32 - 4;
+
+                let arrow_y_offset = ((size - size * 0.5) * 0.5) as i32;
+                draw_text_mut(
+                    img,
+                    color,
+                    arrow_x,
+                    y as i32 + arrow_y_offset,
+                    arrow_scale,
+                    &fonts.bold,
+                    fold_char,
+                );
+            }
+
+            for line in &lines {
+                for span in line {
+                    draw_text_mut(
+                        img,
+                        color,
+                        margin_left as i32,
+                        y as i32,
+                        scale,
+                        &fonts.bold,
+                        &span.text,
+                    );
+                }
+                y += line_height;
+            }
+            y += layout.paragraph_gap;
+        }
+        Block::Paragraph { spans } => {
+            let scale = PxScale::from(theme.body_size);
+            let indented_width = content_width - layout.block_indent;
+            let lines = wrap_spans(spans, fonts, scale, indented_width);
+            let line_height = (theme.body_size * 1.4) as u32;
+
+            for line in &lines {
+                draw_spans(img, line, margin_left + layout.block_indent, y, scale, fonts, theme);
+                y += line_height;
+            }
+            y += layout.paragraph_gap;
+        }
+        Block::CodeBlock { text } => {
+            y = render_code_block(img, text, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
+            y += layout.paragraph_gap;
+        }
+        Block::Table { headers, rows } => {
+            y = render_table(img, headers, rows, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
+            y += layout.paragraph_gap * 2;
+        }
+        Block::List { items } => {
+            y = render_list(img, items, fonts, theme, y, content_width, margin_left, layout);
+            y += layout.paragraph_gap;
+        }
+        Block::Mermaid { source } => {
+            let indented_width = content_width - layout.block_indent;
+            let dark = crate::mermaid::is_dark_bg(theme.bg);
+            let diagram = mermaid_cache.get_or_render(
+                source, indented_width, dark, fonts, theme,
+            );
+            let dw = diagram.width();
+            let dh = diagram.height();
+            // Center within the indented column.
+            let x_off = indented_width.saturating_sub(dw) / 2;
+            let x = margin_left + layout.block_indent + x_off;
+            image::imageops::overlay(img, &*diagram, x as i64, y as i64);
+            y += dh + layout.paragraph_gap;
+        }
+    }
+    y
+}
+
 pub(crate) fn render_markdown(
     blocks: &[Block],
     headings: &mut [HeadingInfo],
@@ -133,125 +359,67 @@ pub(crate) fn render_markdown(
     mermaid_cache: &mut crate::mermaid::MermaidCache,
     fold_arrows: bool,
 ) -> (RgbImage, Vec<(usize, u32)>, u32) {
-    let content_width = (width - layout.margin_left - layout.margin_right).min(layout.max_content_width);
-    let margin_left = (width - content_width) / 2;
-
-    let total_height = compute_total_height(blocks, headings, fonts, theme, content_width, vp_height, layout, mermaid_cache);
+    let (_, margin_left) = content_geometry(width, layout);
+    let (layouts, content_height) = layout_blocks(blocks, headings, width, fonts, theme, layout, mermaid_cache);
+    let total_height = content_height + vp_height / 2;
 
     let mut img = RgbImage::from_pixel(width, total_height.max(1), theme.bg);
-    let mut y: u32 = layout.paragraph_gap;
-    let mut heading_idx: usize = 0;
-    let mut block_positions: Vec<(usize, u32)> = Vec::new();
-
-    for (bi, block) in blocks.iter().enumerate() {
-        if is_block_folded(bi, headings) {
-            if matches!(block, Block::Heading { .. }) {
-                heading_idx += 1;
-            }
-            continue;
-        }
-
-        block_positions.push((bi, y));
-
-        match block {
-            Block::Metadata { entries } => {
-                y = render_metadata(&mut img, entries, fonts, theme, y, margin_left + layout.block_indent, content_width - layout.block_indent);
-                y += layout.paragraph_gap * 2;
-            }
-            Block::Heading { level, spans } => {
-                if matches!(level, HeadingLevel::H1) {
-                    y += layout.h1_extra_margin;
-                }
-
-                let hi = heading_idx;
-                heading_idx += 1;
-
-                let (lines, size, line_height) = wrap_heading_text(
-                    &headings[hi], spans, fonts, theme, content_width,
-                );
-                let (_, color) = heading_style(level, theme);
-                let scale = PxScale::from(size);
-                let heading_total_h = lines.len() as u32 * line_height;
-
-                headings[hi].y_pos = y;
-                headings[hi].heading_height = heading_total_h;
-
-                if fold_arrows {
-                    let fold_char = if headings[hi].folded { "▶" } else { "▼" };
-                    let arrow_scale = PxScale::from(size * 0.5);
-                    let arrow_w = text_size(arrow_scale, &fonts.bold, fold_char).0;
-                    let arrow_x = margin_left as i32 - arrow_w as i32 - 4;
-
-                    let arrow_y_offset = ((size - size * 0.5) * 0.5) as i32;
-                    draw_text_mut(
-                        &mut img,
-                        color,
-                        arrow_x,
-                        y as i32 + arrow_y_offset,
-                        arrow_scale,
-                        &fonts.bold,
-                        fold_char,
-                    );
-                }
-
-                for line in &lines {
-                    for span in line {
-                        draw_text_mut(
-                            &mut img,
-                            color,
-                            margin_left as i32,
-                            y as i32,
-                            scale,
-                            &fonts.bold,
-                            &span.text,
-                        );
-                    }
-                    y += line_height;
-                }
-                y += layout.paragraph_gap;
-            }
-            Block::Paragraph { spans } => {
-                let scale = PxScale::from(theme.body_size);
-                let indented_width = content_width - layout.block_indent;
-                let lines = wrap_spans(spans, fonts, scale, indented_width);
-                let line_height = (theme.body_size * 1.4) as u32;
-
-                for line in &lines {
-                    draw_spans(&mut img, line, margin_left + layout.block_indent, y, scale, fonts, theme);
-                    y += line_height;
-                }
-                y += layout.paragraph_gap;
-            }
-            Block::CodeBlock { text } => {
-                y = render_code_block(&mut img, text, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
-                y += layout.paragraph_gap;
-            }
-            Block::Table { headers, rows } => {
-                y = render_table(&mut img, headers, rows, fonts, theme, y, content_width - layout.block_indent, margin_left + layout.block_indent);
-                y += layout.paragraph_gap * 2;
-            }
-            Block::List { items } => {
-                y = render_list(&mut img, items, fonts, theme, y, content_width, margin_left, layout);
-                y += layout.paragraph_gap;
-            }
-            Block::Mermaid { source } => {
-                let indented_width = content_width - layout.block_indent;
-                let dark = crate::mermaid::is_dark_bg(theme.bg);
-                let diagram = mermaid_cache.get_or_render(
-                    source, indented_width, dark, fonts, theme,
-                );
-                let dw = diagram.width();
-                let dh = diagram.height();
-                // Center within the indented column.
-                let x_off = indented_width.saturating_sub(dw) / 2;
-                let x = margin_left + layout.block_indent + x_off;
-                image::imageops::overlay(&mut img, &*diagram, x as i64, y as i64);
-                y += dh + layout.paragraph_gap;
-            }
-        }
+    for l in &layouts {
+        let heading = l.heading_index.map(|hi| &mut headings[hi]);
+        let end = draw_block(
+            &mut img, &blocks[l.block_index], heading, l.y, 0, width, fonts, theme, layout,
+            mermaid_cache, fold_arrows,
+        );
+        debug_assert!(end <= l.y + l.height, "block {} drew past its slot", l.block_index);
     }
+    let block_positions = layouts.iter().map(|l| (l.block_index, l.y)).collect();
 
     (img, block_positions, margin_left)
+}
+
+/// Render the page rows `[y0, y0 + height)` (full render width), drawing only
+/// the blocks whose slot overlaps them. Pixel-identical to the same rows of
+/// `render_markdown` with `vp_height = 0`; rows past the content are `bg`.
+#[allow(dead_code)] // used by serve mode (protocol v2)
+pub(crate) fn render_region(
+    blocks: &[Block],
+    headings: &mut [HeadingInfo],
+    width: u32,
+    fonts: &Fonts,
+    theme: &Theme,
+    layout: &LayoutParams,
+    mermaid_cache: &mut crate::mermaid::MermaidCache,
+    fold_arrows: bool,
+    layouts: &[BlockLayout],
+    y0: u32,
+    height: u32,
+) -> RgbImage {
+    let mut img = RgbImage::from_pixel(width, height, theme.bg);
+    let y1 = y0 + height;
+    let row_bytes = width as usize * 3;
+    // Slots are sorted by y: skip to the first one that ends after y0.
+    let first = layouts.partition_point(|l| l.y + l.height <= y0);
+    for l in &layouts[first..] {
+        if l.y >= y1 {
+            break;
+        }
+        if l.height == 0 {
+            continue;
+        }
+        let mut scratch = RgbImage::from_pixel(width, l.height, theme.bg);
+        let heading = l.heading_index.map(|hi| &mut headings[hi]);
+        draw_block(
+            &mut scratch, &blocks[l.block_index], heading, 0, l.y, width, fonts, theme, layout,
+            mermaid_cache, fold_arrows,
+        );
+        let from = l.y.max(y0);
+        let to = (l.y + l.height).min(y1);
+        let src = &scratch.as_raw()[(from - l.y) as usize * row_bytes..(to - l.y) as usize * row_bytes];
+        let dst_start = (from - y0) as usize * row_bytes;
+        let dst: &mut [u8] = &mut img;
+        dst[dst_start..dst_start + src.len()].copy_from_slice(src);
+    }
+    img
 }
 
 pub(crate) fn wrap_code_lines(text: &str, fonts: &Fonts, scale: PxScale, inner_width: u32) -> Vec<Vec<Vec<Span>>> {
@@ -315,85 +483,6 @@ pub(crate) fn heading_style(level: &HeadingLevel, theme: &Theme) -> (f32, Rgb<u8
         HeadingLevel::H2 => (theme.h2_size, theme.h2_color),
         _ => (theme.h3_size, theme.h3_color),
     }
-}
-
-fn compute_total_height(
-    blocks: &[Block],
-    headings: &[HeadingInfo],
-    fonts: &Fonts,
-    theme: &Theme,
-    content_width: u32,
-    vp_height: u32,
-    layout: &LayoutParams,
-    mermaid_cache: &mut crate::mermaid::MermaidCache,
-) -> u32 {
-    let mut h: u32 = layout.paragraph_gap;
-    let mut heading_idx: usize = 0;
-
-    for (bi, block) in blocks.iter().enumerate() {
-        if is_block_folded(bi, headings) {
-            if matches!(block, Block::Heading { .. }) {
-                heading_idx += 1;
-            }
-            continue;
-        }
-
-        match block {
-            Block::Metadata { entries } => {
-                let scale = PxScale::from(theme.body_size);
-                let line_height = (theme.body_size * 1.5) as u32;
-                let indented_width = content_width - layout.block_indent;
-                let total_lines: u32 = entries.iter().map(|(k, v)| {
-                    metadata_entry_lines(k, v, fonts, scale, indented_width).len() as u32
-                }).sum();
-                h += total_lines * line_height + layout.paragraph_gap * 2;
-            }
-            Block::Heading { level, spans } => {
-                if matches!(level, HeadingLevel::H1) {
-                    h += layout.h1_extra_margin;
-                }
-                let hi = heading_idx;
-                heading_idx += 1;
-                let (lines, _, line_height) = wrap_heading_text(
-                    &headings[hi], spans, fonts, theme, content_width,
-                );
-                h += lines.len() as u32 * line_height + layout.paragraph_gap;
-            }
-            Block::Paragraph { spans } => {
-                let scale = PxScale::from(theme.body_size);
-                let indented_width = content_width - layout.block_indent;
-                let lines = wrap_spans(spans, fonts, scale, indented_width);
-                let line_height = (theme.body_size * 1.4) as u32;
-                h += lines.len() as u32 * line_height + layout.paragraph_gap;
-            }
-            Block::CodeBlock { text } => {
-                let scale = PxScale::from(theme.body_size);
-                let line_height = (theme.body_size * 1.4) as u32;
-                let indented_width = content_width - layout.block_indent;
-                let wrapped = wrap_code_lines(text, fonts, scale, indented_width - 20);
-                let total_lines = wrapped.iter().map(|w| w.len() as u32).sum::<u32>().max(1);
-                h += total_lines * line_height + 20 + layout.paragraph_gap;
-            }
-            Block::Table { headers, rows } => {
-                h += compute_table_height(headers, rows, fonts, theme, content_width - layout.block_indent);
-                h += layout.paragraph_gap * 2;
-            }
-            Block::List { items } => {
-                h += compute_list_height(items, fonts, theme, content_width, layout);
-                h += layout.paragraph_gap;
-            }
-            Block::Mermaid { source } => {
-                let indented_width = content_width - layout.block_indent;
-                let dark = crate::mermaid::is_dark_bg(theme.bg);
-                let diagram = mermaid_cache.get_or_render(
-                    source, indented_width, dark, fonts, theme,
-                );
-                h += diagram.height() + layout.paragraph_gap;
-            }
-        }
-    }
-
-    h + layout.paragraph_gap + vp_height / 2
 }
 
 fn wrap_plain_text(text: &str, font: &ab_glyph::FontVec, scale: PxScale, max_width: u32) -> Vec<String> {
@@ -968,4 +1057,112 @@ mod tests {
             img.height(), last_y,
         );
     }
+
+    /// A long document mixing every block kind, for region rendering tests.
+    pub(crate) fn long_test_doc() -> String {
+        let mut s = String::from("---\ntitle: Long document\nauthor: Test\n---\n\n");
+        for i in 0..18 {
+            s.push_str(&format!("# Part {i}\n\nIntro paragraph {i} with **bold**, *italic* and `code` words that wrap across the line because it is long enough to wrap at least once in the column.\n\n"));
+            s.push_str(&format!("## Section {i}.1\n\n```rust\nfn f{i}() {{\n    let x = {i};\n    println!(\"{{}}\", x);\n}}\n```\n\n"));
+            s.push_str("| Key | Value | Notes |\n|-----|-------|-------|\n| a | 1 | first row |\n| b | 2 | second row with gjpqy |\n\n");
+            s.push_str("- bullet one\n- bullet two\n  - nested gjpqy\n\n1. first\n2. second\n\n");
+            if i == 5 {
+                s.push_str("```mermaid\nflowchart LR\n    A --> B --> C\n```\n\n");
+            }
+            s.push_str(&format!("### Sub {i}.1.1\n\nClosing words with descenders: gjpqy.\n\n"));
+        }
+        s
+    }
+
+    /// Stack `render_region` strips of `strip_h` px and compare with the full
+    /// render (vp_height = 0, no fold arrows), byte for byte.
+    fn assert_regions_match_full(md: &str, strip_h: u32) {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
+        let width = 970;
+        let (blocks, _) = parse_markdown(md);
+        let mut headings = build_headings(&blocks);
+        let mut cache = MermaidCache::new();
+        let (full, _, _) = render_markdown(&blocks, &mut headings, width, 0, &fonts, &theme, &layout, &mut cache, false);
+        let full_headings: Vec<(u32, u32)> = headings.iter().map(|h| (h.y_pos, h.heading_height)).collect();
+
+        let mut headings = build_headings(&blocks);
+        let (layouts, total) = layout_blocks(&blocks, &headings, width, &fonts, &theme, &layout, &mut cache);
+        assert_eq!(total, full.height());
+        let nstrips = total.div_ceil(strip_h);
+        let row_bytes = width as usize * 3;
+        for i in 0..nstrips {
+            let y0 = i * strip_h;
+            let strip = render_region(&blocks, &mut headings, width, &fonts, &theme, &layout, &mut cache, false, &layouts, y0, strip_h);
+            assert_eq!(strip.dimensions(), (width, strip_h));
+            let rows = strip_h.min(total - y0) as usize;
+            let want = &full.as_raw()[y0 as usize * row_bytes..(y0 as usize + rows) * row_bytes];
+            let got = &strip.as_raw()[..rows * row_bytes];
+            if want != got {
+                let bad = (0..rows).find(|r| want[r * row_bytes..(r + 1) * row_bytes] != got[r * row_bytes..(r + 1) * row_bytes]).unwrap();
+                panic!("strip {i} (h={strip_h}) differs at page row {}", y0 as usize + bad);
+            }
+            assert!(strip.as_raw()[rows * row_bytes..].chunks(3).all(|p| p == theme.bg.0), "padding is bg");
+        }
+        let region_headings: Vec<(u32, u32)> = headings.iter().map(|h| (h.y_pos, h.heading_height)).collect();
+        assert_eq!(region_headings, full_headings, "heading positions match the full render");
+    }
+
+    #[test]
+    fn region_strips_match_full_render() {
+        let long = long_test_doc();
+        let docs: [(&str, &str); 3] = [
+            ("SAMPLE_MD", SAMPLE_MD),
+            ("docs/sample.md", include_str!("../docs/sample.md")),
+            ("long", &long),
+        ];
+        for (name, md) in docs {
+            for strip_h in [21 * 48, 21 * 297, 1000] {
+                eprintln!("{name} strip_h={strip_h}");
+                assert_regions_match_full(md, strip_h);
+            }
+        }
+    }
+
+    #[test]
+    fn long_test_doc_is_long() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
+        let (blocks, _) = parse_markdown(&long_test_doc());
+        let headings = build_headings(&blocks);
+        let mut cache = MermaidCache::new();
+        let (_, total) = layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache);
+        assert!(total / 21 >= 600, "long doc has {} rows", total / 21);
+        assert!(blocks.iter().any(|b| matches!(b, Block::Mermaid { .. })));
+        assert!(blocks.iter().any(|b| matches!(b, Block::Metadata { .. })));
+    }
+
+    #[test]
+    fn total_height_unchanged() {
+        // Heights recorded from the renderer before the layout refactor.
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
+        let cases: [(&str, u32, bool, u32); 8] = [
+            (SAMPLE_MD, 800, false, 1340),
+            (SAMPLE_MD, 800, true, 1214),
+            (SAMPLE_MD, 970, false, 1340),
+            (SAMPLE_MD, 970, true, 1214),
+            (include_str!("../docs/sample.md"), 800, false, 3014),
+            (include_str!("../docs/sample.md"), 800, true, 2838),
+            (include_str!("../docs/sample.md"), 970, false, 2914),
+            (include_str!("../docs/sample.md"), 970, true, 2763),
+        ];
+        for (md, width, fold, want) in cases {
+            let (blocks, _) = parse_markdown(md);
+            let mut headings = build_headings(&blocks);
+            headings[1].folded = fold;
+            let mut cache = MermaidCache::new();
+            let (img, _, _) = render_markdown(&blocks, &mut headings, width, 600, &fonts, &theme, &layout, &mut cache, true);
+            assert_eq!(img.height(), want, "width {width} fold {fold}");
+        }
+    }
 }
+
