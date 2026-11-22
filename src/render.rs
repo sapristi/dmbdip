@@ -349,7 +349,7 @@ fn compute_total_height(
                 h += total_lines * line_height + layout.paragraph_gap * 2;
             }
             Block::Heading { level, spans } => {
-                if matches!(level, HeadingLevel::H1) && h > layout.paragraph_gap {
+                if matches!(level, HeadingLevel::H1) {
                     h += layout.h1_extra_margin;
                 }
                 let hi = heading_idx;
@@ -948,5 +948,24 @@ mod tests {
         let without_margin_blank = (0..without.height())
             .all(|y| (0..margin_left).all(|x| *without.get_pixel(x, y) == theme.bg));
         assert!(without_margin_blank, "left margin should be blank without fold arrows");
+    }
+
+    #[test]
+    fn total_height_without_viewport_padding_fits_content() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
+        let md = "# Title\n\nLast paragraph with descenders: gjpqy.\n";
+        let (blocks, _) = parse_markdown(md);
+        let mut headings = build_headings(&blocks);
+        let mut cache = MermaidCache::new();
+        let (img, positions, _) = render_markdown(&blocks, &mut headings, 800, 0, &fonts, &theme, &layout, &mut cache, false);
+        let last_y = positions.last().unwrap().1;
+        let line_height = (theme.body_size * 1.4) as u32;
+        assert!(
+            img.height() >= last_y + line_height,
+            "image height {} must hold the last line starting at {}",
+            img.height(), last_y,
+        );
     }
 }
