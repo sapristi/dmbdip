@@ -378,7 +378,6 @@ pub(crate) fn render_markdown(
 /// Render the page rows `[y0, y0 + height)` (full render width), drawing only
 /// the blocks whose slot overlaps them. Pixel-identical to the same rows of
 /// `render_markdown` with `vp_height = 0`; rows past the content are `bg`.
-#[allow(dead_code)] // used by serve mode (protocol v2)
 pub(crate) fn render_region(
     blocks: &[Block],
     headings: &mut [HeadingInfo],

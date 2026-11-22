@@ -1,12 +1,13 @@
-//! Headless render server for editor previews (`dmbdip --serve`).
+//! Headless render server for editor previews (`dmbdip --serve`), protocol 2.
 //!
-//! Reads line-delimited JSON requests on stdin, renders the given markdown
-//! text, writes the page as horizontal strips of raw RGB files that the
-//! terminal reads (kitty `t=t`), and answers with one JSON line per request.
-//! See `.project/docs/specs/2026-11-22-14-13-nvim-preview-design.md`.
+//! Reads line-delimited JSON requests on stdin and answers one JSON line per
+//! request. A `layout` request parses and lays out a document and keeps it; a
+//! `strips` request renders some horizontal strips of the kept document and
+//! writes them as raw RGB files that the terminal reads (kitty `t=t`). No
+//! full-page image is ever allocated, so memory does not grow with the
+//! document's length.
+//! See `.project/docs/specs/2026-11-22-15-30-nvim-toggle-large-docs-design.md`.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -20,9 +21,12 @@ use crate::fonts::Fonts;
 use crate::headings::build_headings;
 use crate::mermaid::MermaidCache;
 use crate::parsing::parse_markdown;
-use crate::render::render_markdown;
+use crate::render::{layout_blocks, render_region, BlockLayout};
 use crate::theme::Theme;
+use crate::types::{Block, HeadingInfo};
 
+/// Version of the request/response protocol; the plugin refuses others.
+pub(crate) const PROTOCOL: u32 = 2;
 /// Unicode placeholders carry the row in a diacritic; kitty defines 297 of them.
 pub(crate) const MAX_STRIP_ROWS: u32 = 297;
 /// Upper bounds that keep a bad request from allocating absurd images.
@@ -32,30 +36,62 @@ const MAX_CELL_PX: u32 = 1_000;
 const MERMAID_CACHE_IMAGES: usize = 16;
 
 #[derive(Deserialize)]
-struct RenderRequest {
+struct LayoutRequest {
     id: u64,
     text: String,
     cols: u32,
     cell_w: u32,
     cell_h: u32,
+    strip_rows: u32,
+}
+
+#[derive(Deserialize)]
+struct StripsRequest {
+    id: u64,
+    doc: u64,
+    indices: Vec<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct LayoutResponse {
+    pub(crate) id: u64,
+    #[serde(rename = "type")]
+    pub(crate) kind: String,
+    pub(crate) protocol: u32,
+    pub(crate) doc: u64,
+    pub(crate) image_cols: u32,
+    pub(crate) offset_cols: u32,
+    pub(crate) total_rows: u32,
+    pub(crate) strip_rows: u32,
+    pub(crate) nstrips: u32,
+    pub(crate) bg: String,
+    pub(crate) anchors: Vec<(usize, u32)>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct StripInfo {
-    pub(crate) index: usize,
+    pub(crate) index: u32,
     pub(crate) rows: u32,
-    pub(crate) path: Option<String>,
+    pub(crate) path: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct RenderResponse {
+pub(crate) struct StripsResponse {
     pub(crate) id: u64,
     #[serde(rename = "type")]
     pub(crate) kind: String,
-    pub(crate) cols: u32,
-    pub(crate) total_rows: u32,
+    pub(crate) protocol: u32,
+    pub(crate) doc: u64,
     pub(crate) strips: Vec<StripInfo>,
-    pub(crate) anchors: Vec<(usize, u32)>,
+}
+
+#[derive(Serialize)]
+struct StaleResponse {
+    id: u64,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    protocol: u32,
+    doc: u64,
 }
 
 #[derive(Serialize)]
@@ -63,6 +99,7 @@ struct ErrorResponse<'a> {
     id: Option<u64>,
     #[serde(rename = "type")]
     kind: &'static str,
+    protocol: u32,
     message: &'a str,
 }
 
@@ -76,42 +113,76 @@ pub(crate) fn strip_dir() -> PathBuf {
     }
 }
 
+/// The document of the last successful layout and its geometry.
+struct Doc {
+    id: u64,
+    blocks: Vec<Block>,
+    headings: Vec<HeadingInfo>,
+    layouts: Vec<BlockLayout>,
+    width_px: u32,
+    image_cols: u32,
+    cell_w: u32,
+    cell_h: u32,
+    strip_rows: u32,
+    total_rows: u32,
+    nstrips: u32,
+}
+
 struct Server<'a> {
     fonts: &'a Fonts,
     theme: &'a Theme,
     layout: &'a LayoutParams,
     out_dir: &'a Path,
     mermaid_cache: MermaidCache,
-    /// `(cols, cell_w, cell_h)` of the last successful render.
-    last_geometry: Option<(u32, u32, u32)>,
-    /// `(rows, pixel hash)` per strip of the last successful render.
-    last_strips: Vec<(u32, u64)>,
+    doc: Option<Doc>,
+    /// Number of successful layouts so far (the current doc's id).
+    doc_counter: u64,
     file_counter: u64,
     /// Files written that the terminal may not have consumed yet.
     written: Vec<PathBuf>,
 }
 
 impl<'a> Server<'a> {
+    fn new(fonts: &'a Fonts, theme: &'a Theme, layout: &'a LayoutParams, out_dir: &'a Path) -> Self {
+        Server {
+            fonts,
+            theme,
+            layout,
+            out_dir,
+            mermaid_cache: MermaidCache::with_capacity(MERMAID_CACHE_IMAGES),
+            doc: None,
+            doc_counter: 0,
+            file_counter: 0,
+            written: Vec::new(),
+        }
+    }
+
     fn handle_line(&mut self, line: &str) -> String {
         let value: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => return error_json(None, &format!("invalid JSON: {e}")),
         };
         let id = value.get("id").and_then(|v| v.as_u64());
-        match value.get("type").and_then(|v| v.as_str()) {
-            Some("render") => {}
+        let kind = match value.get("type").and_then(|v| v.as_str()) {
+            Some(k @ ("layout" | "strips")) => k.to_string(),
             Some(other) => return error_json(id, &format!("unknown request type: {other}")),
             None => return error_json(id, "missing request type"),
-        }
-        let req: RenderRequest = match serde_json::from_value(value) {
-            Ok(r) => r,
-            Err(e) => return error_json(id, &format!("invalid render request: {e}")),
         };
 
         let start = Instant::now();
-        let result = catch_unwind(AssertUnwindSafe(|| self.render(&req)));
+        let result = catch_unwind(AssertUnwindSafe(|| -> Result<String, String> {
+            if kind == "layout" {
+                let req: LayoutRequest = serde_json::from_value(value)
+                    .map_err(|e| format!("invalid layout request: {e}"))?;
+                self.layout_doc(&req).map(|r| serde_json::to_string(&r).expect("response serializes"))
+            } else {
+                let req: StripsRequest = serde_json::from_value(value)
+                    .map_err(|e| format!("invalid strips request: {e}"))?;
+                self.strips(&req)
+            }
+        }));
         let json = match result {
-            Ok(Ok(resp)) => serde_json::to_string(&resp).expect("response serializes"),
+            Ok(Ok(json)) => json,
             Ok(Err(msg)) => error_json(id, &msg),
             Err(panic) => {
                 let msg = panic
@@ -122,11 +193,11 @@ impl<'a> Server<'a> {
                 error_json(id, &format!("render panicked: {msg}"))
             }
         };
-        dlog!("serve id={} total_us={}", req.id, start.elapsed().as_micros());
+        dlog!("serve id={:?} type={} total_us={}", id, kind, start.elapsed().as_micros());
         json
     }
 
-    fn render(&mut self, req: &RenderRequest) -> Result<RenderResponse, String> {
+    fn layout_doc(&mut self, req: &LayoutRequest) -> Result<LayoutResponse, String> {
         let (cols, cell_w, cell_h) = (req.cols, req.cell_w, req.cell_h);
         if cols == 0 || cell_w == 0 || cell_h == 0 {
             return Err("cols, cell_w and cell_h must be at least 1".into());
@@ -134,74 +205,94 @@ impl<'a> Server<'a> {
         if cell_w > MAX_CELL_PX || cell_h > MAX_CELL_PX {
             return Err(format!("cell size must be at most {MAX_CELL_PX} px"));
         }
-        let width = cols
-            .checked_mul(cell_w)
-            .filter(|w| *w <= MAX_WIDTH_PX)
-            .ok_or_else(|| format!("render width must be at most {MAX_WIDTH_PX} px"))?;
-        let min_width = self.layout.margin_left + self.layout.margin_right + self.layout.block_indent;
+        let l = self.layout;
+        let max_width = l.max_content_width + l.margin_left + l.margin_right;
+        let width = cols.saturating_mul(cell_w).min(max_width) / cell_w * cell_w;
+        if width > MAX_WIDTH_PX {
+            return Err(format!("render width must be at most {MAX_WIDTH_PX} px"));
+        }
+        let min_width = l.margin_left + l.margin_right + l.block_indent;
         if width <= min_width {
             return Err(format!("render width {width} px is too narrow (need more than {min_width} px)"));
+        }
+        let image_cols = width / cell_w;
+        let strip_rows = req.strip_rows.clamp(1, MAX_STRIP_ROWS);
+
+        let (blocks, source_lines) = parse_markdown(&req.text);
+        let headings = build_headings(&blocks);
+        let (layouts, total_height) = layout_blocks(
+            &blocks, &headings, width, self.fonts, self.theme, self.layout, &mut self.mermaid_cache,
+        );
+        let total_rows = total_height.div_ceil(cell_h).max(1);
+        let nstrips = total_rows.div_ceil(strip_rows);
+
+        let mut anchors: Vec<(usize, u32)> = layouts
+            .iter()
+            .filter_map(|b| source_lines.get(b.block_index).map(|&line| (line, b.y / cell_h)))
+            .collect();
+        anchors.sort_by_key(|&(line, _)| line);
+
+        self.doc_counter += 1;
+        let doc = self.doc_counter;
+        self.doc = Some(Doc {
+            id: doc,
+            blocks,
+            headings,
+            layouts,
+            width_px: width,
+            image_cols,
+            cell_w,
+            cell_h,
+            strip_rows,
+            total_rows,
+            nstrips,
+        });
+        let [r, g, b] = self.theme.bg.0;
+        Ok(LayoutResponse {
+            id: req.id,
+            kind: "layout".into(),
+            protocol: PROTOCOL,
+            doc,
+            image_cols,
+            offset_cols: (cols - image_cols) / 2,
+            total_rows,
+            strip_rows,
+            nstrips,
+            bg: format!("#{r:02x}{g:02x}{b:02x}"),
+            anchors,
+        })
+    }
+
+    fn strips(&mut self, req: &StripsRequest) -> Result<String, String> {
+        let Some(doc) = self.doc.as_mut() else {
+            return Err("no document: send a layout request first".into());
+        };
+        if req.doc != doc.id {
+            let stale = StaleResponse { id: req.id, kind: "stale", protocol: PROTOCOL, doc: doc.id };
+            return Ok(serde_json::to_string(&stale).expect("stale serializes"));
+        }
+        if let Some(bad) = req.indices.iter().find(|&&i| i >= doc.nstrips) {
+            return Err(format!("strip index {bad} out of range (document has {} strips)", doc.nstrips));
         }
 
         // Forget files the terminal has already read (and deleted).
         self.written.retain(|p| p.exists());
 
-        let (blocks, source_lines) = parse_markdown(&req.text);
-        let mut headings = build_headings(&blocks);
-        let (img, positions, _) = render_markdown(
-            &blocks, &mut headings, width, 0, self.fonts, self.theme, self.layout,
-            &mut self.mermaid_cache, false,
-        );
-
-        let total_rows = img.height().div_ceil(cell_h).max(1);
-        let geometry = (cols, cell_w, cell_h);
-        let geometry_changed = self.last_geometry != Some(geometry);
-        let raw = img.as_raw();
-        let row_bytes = width as usize * 3;
-        let bg = self.theme.bg.0;
-
-        let mut strips = Vec::new();
-        let mut new_state = Vec::new();
-        let mut first_row = 0;
-        while first_row < total_rows {
-            let rows = (total_rows - first_row).min(MAX_STRIP_ROWS);
-            let index = strips.len();
-            let bytes = strip_bytes(raw, row_bytes, first_row * cell_h, rows * cell_h, bg);
-            let hash = hash_bytes(&bytes);
-            let changed = geometry_changed || self.last_strips.get(index) != Some(&(rows, hash));
-            let path = if changed {
-                Some(self.write_strip(&bytes)?)
-            } else {
-                None
-            };
-            strips.push(StripInfo { index, rows, path });
-            new_state.push((rows, hash));
-            first_row += rows;
+        let mut strips = Vec::with_capacity(req.indices.len());
+        for &index in &req.indices {
+            let first_row = index * doc.strip_rows;
+            let rows = (doc.total_rows - first_row).min(doc.strip_rows);
+            let img = render_region(
+                &doc.blocks, &mut doc.headings, doc.width_px, self.fonts, self.theme, self.layout,
+                &mut self.mermaid_cache, false, &doc.layouts, first_row * doc.cell_h, rows * doc.cell_h,
+            );
+            debug_assert_eq!(img.width(), doc.image_cols * doc.cell_w);
+            let path = write_strip(self.out_dir, &mut self.file_counter, img.as_raw())?;
+            self.written.push(path.clone());
+            strips.push(StripInfo { index, rows, path: path.to_string_lossy().into_owned() });
         }
-
-        let mut anchors: Vec<(usize, u32)> = positions
-            .iter()
-            .filter_map(|&(bi, y)| source_lines.get(bi).map(|&line| (line, y / cell_h)))
-            .collect();
-        anchors.sort_by_key(|&(line, _)| line);
-
-        self.last_geometry = Some(geometry);
-        self.last_strips = new_state;
-        Ok(RenderResponse { id: req.id, kind: "render".into(), cols, total_rows, strips, anchors })
-    }
-
-    fn write_strip(&mut self, bytes: &[u8]) -> Result<String, String> {
-        let name = format!(
-            "dmbdip-{}-tty-graphics-protocol-{}.rgb",
-            std::process::id(),
-            self.file_counter,
-        );
-        self.file_counter += 1;
-        let path = self.out_dir.join(name);
-        std::fs::write(&path, bytes).map_err(|e| format!("writing {}: {e}", path.display()))?;
-        let s = path.to_string_lossy().into_owned();
-        self.written.push(path);
-        Ok(s)
+        let resp = StripsResponse { id: req.id, kind: "strips".into(), protocol: PROTOCOL, doc: doc.id, strips };
+        Ok(serde_json::to_string(&resp).expect("response serializes"))
     }
 
     fn cleanup(&mut self) {
@@ -211,31 +302,24 @@ impl<'a> Server<'a> {
     }
 }
 
-/// Pixel rows `[y0, y0 + height)` of the image as raw RGB, padding rows past
-/// the image's end with the background colour.
-fn strip_bytes(raw: &[u8], row_bytes: usize, y0: u32, height: u32, bg: [u8; 3]) -> Vec<u8> {
-    let start = (y0 as usize * row_bytes).min(raw.len());
-    let end = ((y0 + height) as usize * row_bytes).min(raw.len());
-    let mut bytes = Vec::with_capacity(height as usize * row_bytes);
-    bytes.extend_from_slice(&raw[start..end]);
-    let missing = height as usize * row_bytes - bytes.len();
-    bytes.extend(bg.iter().copied().cycle().take(missing));
-    bytes
-}
-
-fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut h = DefaultHasher::new();
-    bytes.hash(&mut h);
-    h.finish()
+/// Write raw RGB bytes to a new strip file. The name must contain
+/// `tty-graphics-protocol`: kitty only deletes temp files that do.
+fn write_strip(out_dir: &Path, counter: &mut u64, bytes: &[u8]) -> Result<PathBuf, String> {
+    let name = format!("dmbdip-{}-tty-graphics-protocol-{}.rgb", std::process::id(), counter);
+    *counter += 1;
+    let path = out_dir.join(name);
+    std::fs::write(&path, bytes).map_err(|e| format!("writing {}: {e}", path.display()))?;
+    Ok(path)
 }
 
 fn error_json(id: Option<u64>, message: &str) -> String {
-    serde_json::to_string(&ErrorResponse { id, kind: "error", message }).expect("error serializes")
+    serde_json::to_string(&ErrorResponse { id, kind: "error", protocol: PROTOCOL, message })
+        .expect("error serializes")
 }
 
-/// Serve render requests from `input` until EOF, one JSON response line per
-/// request on `output`. Strip files go to `out_dir`; any still present at EOF
-/// are removed.
+/// Serve requests from `input` until EOF, one JSON response line per request
+/// on `output`. Strip files go to `out_dir`; any still present at EOF are
+/// removed.
 pub(crate) fn run_serve(
     input: impl BufRead,
     mut output: impl Write,
@@ -244,17 +328,7 @@ pub(crate) fn run_serve(
     layout: &LayoutParams,
     out_dir: &Path,
 ) -> io::Result<()> {
-    let mut server = Server {
-        fonts,
-        theme,
-        layout,
-        out_dir,
-        mermaid_cache: MermaidCache::with_capacity(MERMAID_CACHE_IMAGES),
-        last_geometry: None,
-        last_strips: Vec::new(),
-        file_counter: 0,
-        written: Vec::new(),
-    };
+    let mut server = Server::new(fonts, theme, layout, out_dir);
     let result = (|| {
         for line in input.lines() {
             let line = line?;
@@ -275,13 +349,13 @@ pub(crate) fn run_serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::render_markdown;
     use crate::test_helpers::{test_fonts, SAMPLE_MD};
     use crate::theme::default_theme;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const CELL_W: u32 = 10;
     const CELL_H: u32 = 20;
-    const COLS: u32 = 80;
 
     struct TempDir(PathBuf);
 
@@ -316,12 +390,16 @@ mod tests {
         s
     }
 
-    fn request(id: u64, text: &str, cols: u32) -> String {
+    fn layout_req(id: u64, text: &str, cols: u32, strip_rows: u32) -> String {
         serde_json::json!({
-            "id": id, "type": "render", "text": text,
-            "cols": cols, "cell_w": CELL_W, "cell_h": CELL_H,
+            "id": id, "type": "layout", "text": text,
+            "cols": cols, "cell_w": CELL_W, "cell_h": CELL_H, "strip_rows": strip_rows,
         })
         .to_string()
+    }
+
+    fn strips_req(id: u64, doc: u64, indices: &[u32]) -> String {
+        serde_json::json!({ "id": id, "type": "strips", "doc": doc, "indices": indices }).to_string()
     }
 
     /// Run the serve loop over the given request lines; return parsed responses.
@@ -339,112 +417,121 @@ mod tests {
             .collect()
     }
 
-    fn render_resp(v: &serde_json::Value) -> RenderResponse {
-        serde_json::from_value(v.clone()).unwrap()
-    }
-
     /// A server that keeps files around so tests can inspect them.
     fn with_server<R>(dir: &TempDir, f: impl FnOnce(&mut Server) -> R) -> R {
         let fonts = test_fonts();
         let theme = default_theme();
         let layout = LayoutParams::default();
-        let mut server = Server {
-            fonts: &fonts,
-            theme: &theme,
-            layout: &layout,
-            out_dir: &dir.0,
-            mermaid_cache: MermaidCache::new(),
-            last_geometry: None,
-            last_strips: Vec::new(),
-            file_counter: 0,
-            written: Vec::new(),
-        };
+        let mut server = Server::new(&fonts, &theme, &layout, &dir.0);
         f(&mut server)
     }
 
-    fn render_line(server: &mut Server, line: &str) -> RenderResponse {
+    fn call(server: &mut Server, line: &str) -> serde_json::Value {
         let v: serde_json::Value = serde_json::from_str(&server.handle_line(line)).unwrap();
-        assert_eq!(v["type"], "render", "unexpected response: {v}");
-        render_resp(&v)
+        assert_eq!(v["protocol"], PROTOCOL, "every response carries the protocol: {v}");
+        v
+    }
+
+    fn layout(server: &mut Server, line: &str) -> LayoutResponse {
+        let v = call(server, line);
+        assert_eq!(v["type"], "layout", "unexpected response: {v}");
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn strips(server: &mut Server, line: &str) -> StripsResponse {
+        let v = call(server, line);
+        assert_eq!(v["type"], "strips", "unexpected response: {v}");
+        serde_json::from_value(v).unwrap()
     }
 
     #[test]
-    fn first_render_writes_all_strips_with_exact_size() {
+    fn wide_window_caps_image_and_centres_it() {
+        let dir = TempDir::new();
+        let resp = with_server(&dir, |s| layout(s, &layout_req(1, "# Hi\n\nworld", 200, 10)));
+        let l = LayoutParams::default();
+        let max = l.max_content_width + l.margin_left + l.margin_right;
+        assert_eq!(resp.image_cols, max / CELL_W);
+        assert_eq!(resp.offset_cols, (200 - resp.image_cols) / 2);
+        assert!(resp.offset_cols > 0);
+        assert_eq!(resp.doc, 1);
+        let [r, g, b] = default_theme().bg.0;
+        assert_eq!(resp.bg, format!("#{r:02x}{g:02x}{b:02x}"));
+    }
+
+    #[test]
+    fn narrow_window_uses_full_width() {
+        let dir = TempDir::new();
+        let resp = with_server(&dir, |s| layout(s, &layout_req(1, "# Hi\n\nworld", 45, 10)));
+        assert_eq!(resp.image_cols, 45);
+        assert_eq!(resp.offset_cols, 0);
+    }
+
+    #[test]
+    fn strip_count_and_clamping() {
         let dir = TempDir::new();
         let doc = long_doc();
-        let resp = with_server(&dir, |s| render_line(s, &request(1, &doc, COLS)));
+        with_server(&dir, |s| {
+            let r = layout(s, &layout_req(1, &doc, 80, 48));
+            assert_eq!(r.strip_rows, 48);
+            assert_eq!(r.nstrips, r.total_rows.div_ceil(48));
+            assert!(r.nstrips > 3);
+            let r = layout(s, &layout_req(2, &doc, 80, 0));
+            assert_eq!((r.strip_rows, r.nstrips), (1, r.total_rows));
+            let r = layout(s, &layout_req(3, &doc, 80, 1000));
+            assert_eq!(r.strip_rows, MAX_STRIP_ROWS);
+            assert_eq!(r.doc, 3, "doc increments on each layout");
+        });
+    }
 
-        assert_eq!(resp.id, 1);
-        assert_eq!(resp.cols, COLS);
-        assert!(resp.strips.len() >= 2, "expected several strips, got {}", resp.strips.len());
-        let sum: u32 = resp.strips.iter().map(|s| s.rows).sum();
-        assert_eq!(sum, resp.total_rows);
-        for (i, strip) in resp.strips.iter().enumerate() {
-            assert_eq!(strip.index, i);
-            assert!(strip.rows >= 1 && strip.rows <= MAX_STRIP_ROWS);
-            if i + 1 < resp.strips.len() {
-                assert_eq!(strip.rows, MAX_STRIP_ROWS);
-            }
-            let path = strip.path.as_ref().expect("first render sets every path");
-            assert!(path.contains("tty-graphics-protocol"));
-            let len = std::fs::metadata(path).unwrap().len();
-            assert_eq!(len, (COLS * CELL_W * strip.rows * CELL_H * 3) as u64);
+    #[test]
+    fn layout_writes_no_files() {
+        let dir = TempDir::new();
+        with_server(&dir, |s| layout(s, &layout_req(1, &long_doc(), 80, 48)));
+        assert!(dir.files().is_empty());
+    }
+
+    #[test]
+    fn strips_have_exact_size_and_stitch_to_full_render() {
+        let dir = TempDir::new();
+        let cols = 80;
+        let (resp, files) = with_server(&dir, |s| {
+            let l = layout(s, &layout_req(1, SAMPLE_MD, cols, 13));
+            let all: Vec<u32> = (0..l.nstrips).collect();
+            let r = strips(s, &strips_req(2, l.doc, &all));
+            let files: Vec<Vec<u8>> = r.strips.iter().map(|st| std::fs::read(&st.path).unwrap()).collect();
+            (l, (r, files))
+        });
+        let (sresp, files) = files;
+        assert_eq!(sresp.doc, 1);
+        assert_eq!(sresp.strips.len() as u32, resp.nstrips);
+        let width = resp.image_cols * CELL_W;
+        let mut stitched = Vec::new();
+        for (i, (st, bytes)) in sresp.strips.iter().zip(&files).enumerate() {
+            assert_eq!(st.index, i as u32);
+            assert!(st.path.contains("tty-graphics-protocol"));
+            let want_rows = if i as u32 + 1 < resp.nstrips { 13 } else { resp.total_rows - 13 * i as u32 };
+            assert_eq!(st.rows, want_rows);
+            assert_eq!(bytes.len(), (width * st.rows * CELL_H * 3) as usize);
+            stitched.extend_from_slice(bytes);
         }
-    }
 
-    #[test]
-    fn padding_rows_use_background() {
-        let dir = TempDir::new();
-        let resp = with_server(&dir, |s| render_line(s, &request(1, "# Hi\n\nworld", COLS)));
-        assert_eq!(resp.strips.len(), 1);
-        let bytes = std::fs::read(resp.strips[0].path.as_ref().unwrap()).unwrap();
-        let bg = default_theme().bg.0;
-        let row_bytes = (COLS * CELL_W * 3) as usize;
-        let last_row = &bytes[bytes.len() - row_bytes..];
-        assert!(last_row.chunks(3).all(|p| p == bg));
-    }
-
-    #[test]
-    fn identical_render_sends_nothing() {
-        let dir = TempDir::new();
-        let doc = long_doc();
-        let second = with_server(&dir, |s| {
-            render_line(s, &request(1, &doc, COLS));
-            render_line(s, &request(2, &doc, COLS))
-        });
-        assert!(second.strips.iter().all(|s| s.path.is_none()));
-    }
-
-    #[test]
-    fn edit_near_end_only_resends_last_strip() {
-        let dir = TempDir::new();
-        let doc = long_doc();
-        let edited = format!("{doc}Extra closing words.\n");
-        let second = with_server(&dir, |s| {
-            render_line(s, &request(1, &doc, COLS));
-            render_line(s, &request(2, &edited, COLS))
-        });
-        assert!(second.strips.len() >= 2);
-        assert!(second.strips[0].path.is_none(), "first strip is unchanged");
-        assert!(second.strips.last().unwrap().path.is_some(), "last strip changed");
-    }
-
-    #[test]
-    fn changing_cols_resends_everything() {
-        let dir = TempDir::new();
-        let doc = long_doc();
-        let second = with_server(&dir, |s| {
-            render_line(s, &request(1, &doc, COLS));
-            render_line(s, &request(2, &doc, COLS + 10))
-        });
-        assert_eq!(second.cols, COLS + 10);
-        assert!(second.strips.iter().all(|s| s.path.is_some()));
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let (blocks, _) = parse_markdown(SAMPLE_MD);
+        let mut headings = build_headings(&blocks);
+        let mut cache = MermaidCache::new();
+        let (full, _, _) = render_markdown(
+            &blocks, &mut headings, width, 0, &fonts, &theme, &LayoutParams::default(), &mut cache, false,
+        );
+        let raw = full.as_raw();
+        assert_eq!(&stitched[..raw.len()], &raw[..], "strips equal the full render");
+        assert!(stitched[raw.len()..].chunks(3).all(|p| p == theme.bg.0), "padding is bg");
     }
 
     #[test]
     fn anchors_are_sorted_and_monotonic() {
         let dir = TempDir::new();
-        let resp = with_server(&dir, |s| render_line(s, &request(1, SAMPLE_MD, COLS)));
+        let resp = with_server(&dir, |s| layout(s, &layout_req(1, SAMPLE_MD, 80, 50)));
         let (blocks, _) = parse_markdown(SAMPLE_MD);
         assert_eq!(resp.anchors.len(), blocks.len());
         for w in resp.anchors.windows(2) {
@@ -456,14 +543,34 @@ mod tests {
     }
 
     #[test]
+    fn stale_doc_and_bad_indices() {
+        let dir = TempDir::new();
+        with_server(&dir, |s| {
+            let v = call(s, &strips_req(1, 1, &[0]));
+            assert_eq!(v["type"], "error", "strips before layout: {v}");
+            layout(s, &layout_req(2, "hello", 80, 10));
+            let l = layout(s, &layout_req(3, "hello again", 80, 10));
+            let v = call(s, &strips_req(4, l.doc - 1, &[0]));
+            assert_eq!(v["type"], "stale");
+            assert_eq!(v["id"], 4);
+            assert_eq!(v["doc"], l.doc);
+            let v = call(s, &strips_req(5, l.doc, &[l.nstrips]));
+            assert_eq!(v["type"], "error");
+            assert_eq!(v["id"], 5);
+        });
+        assert!(dir.files().is_empty(), "no files for stale or bad requests");
+    }
+
+    #[test]
     fn malformed_line_reports_error_and_continues() {
         let dir = TempDir::new();
-        let responses = serve(&["not json".to_string(), request(5, "hello", COLS)], &dir);
+        let responses = serve(&["not json".to_string(), layout_req(5, "hello", 80, 10)], &dir);
         assert_eq!(responses.len(), 2);
         assert_eq!(responses[0]["type"], "error");
+        assert_eq!(responses[0]["protocol"], PROTOCOL);
         assert!(responses[0]["id"].is_null());
         assert!(responses[0]["message"].is_string());
-        assert_eq!(responses[1]["type"], "render");
+        assert_eq!(responses[1]["type"], "layout");
         assert_eq!(responses[1]["id"], 5);
     }
 
@@ -473,13 +580,14 @@ mod tests {
         let responses = serve(
             &[
                 r#"{"id": 1, "type": "bogus"}"#.to_string(),
-                r#"{"id": 2, "type": "render", "text": "x"}"#.to_string(),
-                request(3, "x", 0),
-                request(4, "x", 3),
+                r#"{"id": 2, "type": "layout", "text": "x"}"#.to_string(),
+                layout_req(3, "x", 0, 10),
+                layout_req(4, "x", 3, 10),
+                r#"{"id": 5, "type": "render", "text": "x", "cols": 80, "cell_w": 10, "cell_h": 20}"#.to_string(),
             ],
             &dir,
         );
-        assert_eq!(responses.len(), 4);
+        assert_eq!(responses.len(), 5);
         for (i, r) in responses.iter().enumerate() {
             assert_eq!(r["type"], "error", "response {i}: {r}");
             assert_eq!(r["id"], i as u64 + 1);
@@ -489,10 +597,9 @@ mod tests {
     #[test]
     fn eof_removes_unconsumed_files() {
         let dir = TempDir::new();
-        let doc = long_doc();
-        let responses = serve(&[request(1, &doc, COLS), request(2, &doc, COLS + 5)], &dir);
+        let responses = serve(&[layout_req(1, &long_doc(), 80, 48), strips_req(2, 1, &[0, 1, 2])], &dir);
         assert_eq!(responses.len(), 2);
-        assert!(render_resp(&responses[1]).strips.iter().all(|s| s.path.is_some()));
+        assert_eq!(responses[1]["strips"].as_array().unwrap().len(), 3);
         assert!(dir.files().is_empty(), "leftover files: {:?}", dir.files());
     }
 }
