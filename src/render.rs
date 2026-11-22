@@ -161,6 +161,11 @@ fn content_geometry(width: u32, layout: &LayoutParams) -> (u32, u32) {
 
 /// Lay out the unfolded blocks without drawing: each block's slot, and the
 /// content height (without the TUI's `vp_height / 2` bottom padding).
+///
+/// With `row_align > 1` (serve mode: the cell height), each heading slot
+/// starts and ends on a multiple of `row_align`: the previous slot grows to
+/// the heading's rounded-up `y` and the heading's slot is made taller, so
+/// slots stay contiguous. `row_align = 1` leaves the layout unchanged.
 pub(crate) fn layout_blocks(
     blocks: &[Block],
     headings: &[HeadingInfo],
@@ -169,6 +174,7 @@ pub(crate) fn layout_blocks(
     theme: &Theme,
     layout: &LayoutParams,
     mermaid_cache: &mut crate::mermaid::MermaidCache,
+    row_align: u32,
 ) -> (Vec<BlockLayout>, u32) {
     let (content_width, _) = content_geometry(width, layout);
     let mut y: u32 = layout.paragraph_gap;
@@ -188,6 +194,14 @@ pub(crate) fn layout_blocks(
         };
         if is_block_folded(bi, headings) {
             continue;
+        }
+        let align = row_align > 1 && heading_index.is_some();
+        if align {
+            let aligned = y.next_multiple_of(row_align);
+            if let Some(prev) = out.last_mut() {
+                prev.height += aligned - y;
+            }
+            y = aligned;
         }
 
         let mut parts = Vec::new();
@@ -236,6 +250,7 @@ pub(crate) fn layout_blocks(
                 height + layout.paragraph_gap
             }
         };
+        let advance = if align { (y + advance).next_multiple_of(row_align) - y } else { advance };
         out.push(BlockLayout { block_index: bi, heading_index, y, height: advance, parts });
         y += advance;
     }
@@ -392,7 +407,7 @@ pub(crate) fn render_markdown(
     fold_arrows: bool,
 ) -> (RgbImage, Vec<(usize, u32)>, u32) {
     let (_, margin_left) = content_geometry(width, layout);
-    let (layouts, content_height) = layout_blocks(blocks, headings, width, fonts, theme, layout, mermaid_cache);
+    let (layouts, content_height) = layout_blocks(blocks, headings, width, fonts, theme, layout, mermaid_cache, 1);
     let total_height = content_height + vp_height / 2;
 
     let mut img = RgbImage::from_pixel(width, total_height.max(1), theme.bg);
@@ -1184,7 +1199,7 @@ mod tests {
         let full_headings: Vec<(u32, u32)> = headings.iter().map(|h| (h.y_pos, h.heading_height)).collect();
 
         let mut headings = build_headings(&blocks);
-        let (layouts, total) = layout_blocks(&blocks, &headings, width, &fonts, &theme, &layout, &mut cache);
+        let (layouts, total) = layout_blocks(&blocks, &headings, width, &fonts, &theme, &layout, &mut cache, 1);
         assert_eq!(total, full.height());
         let nstrips = total.div_ceil(strip_h);
         let row_bytes = width as usize * 3;
@@ -1234,6 +1249,75 @@ mod tests {
         }
     }
 
+    /// Docs for row alignment: the sample, one starting with an H1, one with a
+    /// table and code right before headings.
+    fn row_align_docs() -> Vec<(&'static str, String)> {
+        vec![
+            ("SAMPLE_MD", SAMPLE_MD.to_string()),
+            ("h1 first", "# Title\n\nIntro.\n\n## Sub\n\nText gjpqy.\n\n# Second\n\nMore.\n".to_string()),
+            (
+                "table and code",
+                "Intro.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n## After table\n\n```\ncode\n```\n\n### After code\n\n- item\n\n# Last\n".to_string(),
+            ),
+            ("long", long_test_doc()),
+        ]
+    }
+
+    #[test]
+    fn row_aligned_heading_slots() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
+        let align = 21;
+        for (name, md) in row_align_docs() {
+            let (blocks, _) = parse_markdown(&md);
+            let headings = build_headings(&blocks);
+            let mut cache = MermaidCache::new();
+            let (plain, plain_total) = layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache, 1);
+            let (layouts, total) = layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache, align);
+            assert_eq!(layouts.len(), plain.len(), "{name}: same blocks");
+            assert!(total >= plain_total, "{name}: alignment only adds space");
+            assert!(layouts.iter().any(|l| l.heading_index.is_some()), "{name}: has headings");
+            for (i, l) in layouts.iter().enumerate() {
+                if l.heading_index.is_some() {
+                    assert_eq!(l.y % align, 0, "{name}: heading slot {i} starts on a row");
+                    if i + 1 < layouts.len() {
+                        assert_eq!((l.y + l.height) % align, 0, "{name}: heading slot {i} ends on a row");
+                    }
+                }
+            }
+            for w in layouts.windows(2) {
+                assert_eq!(w[0].y + w[0].height, w[1].y, "{name}: slots are contiguous");
+            }
+            let last = layouts.last().unwrap();
+            assert_eq!(last.y + last.height, total, "{name}: last slot runs to the end");
+        }
+    }
+
+    #[test]
+    fn row_aligned_regions_match_full_draw() {
+        let fonts = test_fonts();
+        let theme = default_theme();
+        let layout = LayoutParams::default();
+        let width = 970;
+        for (name, md) in row_align_docs() {
+            let (blocks, _) = parse_markdown(&md);
+            let mut headings = build_headings(&blocks);
+            let mut cache = MermaidCache::new();
+            let (layouts, total) = layout_blocks(&blocks, &headings, width, &fonts, &theme, &layout, &mut cache, 21);
+            let full = render_region(&blocks, &mut headings, width, &fonts, &theme, &layout, &mut cache, false, &layouts, 0, total);
+            let row_bytes = width as usize * 3;
+            let strip_h = 21 * 10;
+            for i in 0..total.div_ceil(strip_h) {
+                let y0 = i * strip_h;
+                let strip = render_region(&blocks, &mut headings, width, &fonts, &theme, &layout, &mut cache, false, &layouts, y0, strip_h);
+                let rows = strip_h.min(total - y0) as usize;
+                let want = &full.as_raw()[y0 as usize * row_bytes..(y0 as usize + rows) * row_bytes];
+                assert!(want == &strip.as_raw()[..rows * row_bytes], "{name}: strip {i} differs from the full draw");
+            }
+        }
+    }
+
     #[test]
     fn long_test_doc_is_long() {
         let fonts = test_fonts();
@@ -1242,7 +1326,7 @@ mod tests {
         let (blocks, _) = parse_markdown(&long_test_doc());
         let headings = build_headings(&blocks);
         let mut cache = MermaidCache::new();
-        let (_, total) = layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache);
+        let (_, total) = layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache, 1);
         assert!(total / 21 >= 600, "long doc has {} rows", total / 21);
         assert!(blocks.iter().any(|b| matches!(b, Block::Mermaid { .. })));
         assert!(blocks.iter().any(|b| matches!(b, Block::Metadata { .. })));
@@ -1283,7 +1367,7 @@ mod tests {
         let (blocks, _) = parse_markdown(md);
         let headings = build_headings(&blocks);
         let mut cache = MermaidCache::with_capacity(16);
-        layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache);
+        layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache, 1);
         assert_eq!(cache.size_len(), 2);
         assert_eq!(cache.len(), 0, "layout must not rasterize diagrams");
     }
@@ -1297,7 +1381,7 @@ mod tests {
         let (blocks, _) = parse_markdown(md);
         let mut headings = build_headings(&blocks);
         let mut cache = MermaidCache::new();
-        let (layouts, total) = layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache);
+        let (layouts, total) = layout_blocks(&blocks, &headings, 970, &fonts, &theme, &layout, &mut cache, 1);
         let strip_h = 42 * 50;
         let y0 = (total / 2 / strip_h).max(1) * strip_h;
         assert!(y0 + strip_h <= total, "document shorter than two strips");

@@ -221,7 +221,7 @@ impl<'a> Server<'a> {
         let (blocks, source_lines) = parse_markdown(&req.text);
         let headings = build_headings(&blocks);
         let (layouts, total_height) = layout_blocks(
-            &blocks, &headings, width, self.fonts, self.theme, self.layout, &mut self.mermaid_cache,
+            &blocks, &headings, width, self.fonts, self.theme, self.layout, &mut self.mermaid_cache, 1,
         );
         let total_rows = total_height.div_ceil(cell_h).max(1);
         let nstrips = total_rows.div_ceil(strip_rows);
